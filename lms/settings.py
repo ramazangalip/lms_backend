@@ -160,13 +160,11 @@ CORS_ALLOWED_ORIGINS = [
 
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True
-EMAIL_HOST_USER = 'ramazansaidgalip@gmail.com' 
-
-
-EMAIL_HOST_PASSWORD = 'lthtixxwnfdefvqn' 
-
+EMAIL_PORT = 465  # Portu değiştirdik
+EMAIL_USE_TLS = False
+EMAIL_USE_SSL = True # TLS yerine SSL kullanıyoruz
+EMAIL_HOST_USER = 'ramazansaidgalip@gmail.com'
+EMAIL_HOST_PASSWORD = 'lthtixxwnfdefvqn'
 DEFAULT_FROM_EMAIL = f'Bingöl LMS <{EMAIL_HOST_USER}>'
 
 from datetime import timedelta
