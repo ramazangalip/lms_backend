@@ -153,7 +153,12 @@ AUTH_USER_MODEL = 'users.User' # Kendi kullanıcı modelimizi kullanacağımız�
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
-    
+    "https://yapayzekadesteklisinifs.onrender.com", # Sondaki / işaretini sildik
+]
+
+# Eğer CSRF kullanıyorsan (form gönderimleri vb. için) buraya da eklemen iyi olur:
+CSRF_TRUSTED_ORIGINS = [
+    "https://yapayzekadesteklisinifs.onrender.com",
 ]
 
 
