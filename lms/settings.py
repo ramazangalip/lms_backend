@@ -161,20 +161,7 @@ CSRF_TRUSTED_ORIGINS = [
 
 
 
-# Brevo (Sendinblue) SMTP Ayarları
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp-relay.brevo.com'
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True
-EMAIL_USE_SSL = False
 
-# Görseldeki Login ve Password bilgilerini buraya yazıyoruz
-EMAIL_HOST_USER = '9fcee5001@smtp-brevo.com'
-EMAIL_HOST_PASSWORD = 'CdxftNgFXEj2GKYZ'
-
-# Gönderen kişi olarak görünecek adres
-# Not: Brevo panelinde doğruladığın mail adresini kullanman önerilir
-DEFAULT_FROM_EMAIL = 'Bingöl LMS <ramazansaidgalip@gmail.com>'
 
 from datetime import timedelta
 
