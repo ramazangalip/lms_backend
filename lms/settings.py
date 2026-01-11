@@ -170,7 +170,7 @@ EMAIL_USE_SSL = False
 
 # Görseldeki Login ve Password bilgilerini buraya yazıyoruz
 EMAIL_HOST_USER = '9fcee5001@smtp-brevo.com'
-EMAIL_HOST_PASSWORD = 'CdxtfNgFXEj2GKYZ'
+EMAIL_HOST_PASSWORD = 'CdxftNgFXEj2GKYZ'
 
 # Gönderen kişi olarak görünecek adres
 # Not: Brevo panelinde doğruladığın mail adresini kullanman önerilir
