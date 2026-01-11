@@ -46,7 +46,7 @@ class SendOTPView(APIView):
             send_mail(
                 subject='LMS Kayıt Doğrulama Kodu',
                 message=f'Bingöl Üniversitesi LMS sistemine kayıt için kodunuz: {otp_code}',
-                from_email='noreply@bingol.edu.tr',
+                from_email='ramazansaidgalip@gmail.com',
                 recipient_list=[email],
                 fail_silently=False,
             )
