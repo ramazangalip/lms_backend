@@ -22,7 +22,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = 'django-insecure-9pdeq*5row6j_gxn+iuzp&%mbqiq_(h1k000x^986$gok)n=f4'
 
-# SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = False
 
 ALLOWED_HOSTS = ["*"]
@@ -47,7 +46,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
-    'whitenoise.middleware.WhiteNoiseMiddleware', # Buraya ekle
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -134,10 +133,9 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
-# Statik dosyaların toplanacağı klasör (Render için kritik)
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
-# WhiteNoise için depolama optimizasyonu (Opsiyonel ama önerilir)
+
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 REST_FRAMEWORK = {
@@ -145,18 +143,18 @@ REST_FRAMEWORK = {
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': (
-        'rest_framework.permissions.IsAuthenticated', # Varsayılan olarak her şey kilitli
+        'rest_framework.permissions.IsAuthenticated', 
     ),
 }
 
-AUTH_USER_MODEL = 'users.User' # Kendi kullanıcı modelimizi kullanacağımızı belirttik
+AUTH_USER_MODEL = 'users.User' 
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
-    "https://yapayzekadesteklisinifs.onrender.com", # Sondaki / işaretini sildik
+    "https://yapayzekadesteklisinifs.onrender.com", 
 ]
 
-# Eğer CSRF kullanıyorsan (form gönderimleri vb. için) buraya da eklemen iyi olur:
+
 CSRF_TRUSTED_ORIGINS = [
     "https://yapayzekadesteklisinifs.onrender.com",
 ]
@@ -164,18 +162,20 @@ CSRF_TRUSTED_ORIGINS = [
 
 
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp.gmail.com'
-EMAIL_PORT = 465  # Portu değiştirdik
+EMAIL_HOST = 'smtp.resend.com'
+EMAIL_PORT = 465
 EMAIL_USE_TLS = False
-EMAIL_USE_SSL = True # TLS yerine SSL kullanıyoruz
-EMAIL_HOST_USER = 'ramazansaidgalip@gmail.com'
-EMAIL_HOST_PASSWORD = 'lthtixxwnfdefvqn'
-DEFAULT_FROM_EMAIL = f'Bingöl LMS <{EMAIL_HOST_USER}>'
+EMAIL_USE_SSL = True
+EMAIL_HOST_USER = 'resend' 
+EMAIL_HOST_PASSWORD = 're_X3aXVEqR_9exU16SxFBozLJFKDZcTEXdn'
+DEFAULT_FROM_EMAIL = 'onboarding@resend.dev'
+
+
 
 from datetime import timedelta
 
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(days=1), # Test aşamasında kolaylık sağlar
+    "ACCESS_TOKEN_LIFETIME": timedelta(days=1), 
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
     "ROTATE_REFRESH_TOKENS": False,
     "BLACKLIST_AFTER_ROTATION": False,

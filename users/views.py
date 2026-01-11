@@ -4,6 +4,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from django.core.mail import send_mail
+from django.conf import settings
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import User, EmailOTP
@@ -46,7 +47,7 @@ class SendOTPView(APIView):
             send_mail(
                 subject='LMS Kayıt Doğrulama Kodu',
                 message=f'Bingöl Üniversitesi LMS sistemine kayıt için kodunuz: {otp_code}',
-                from_email='noreply@bingol.edu.tr',
+                from_email=settings.DEFAULT_FROM_EMAIL,
                 recipient_list=[email],
                 fail_silently=False,
             )
