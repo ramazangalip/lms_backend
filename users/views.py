@@ -45,7 +45,7 @@ class SendOTPView(APIView):
 
         # 3. Brevo API ile Mail Gönderme
         url = "https://api.brevo.com/v3/smtp/email"
-        api_key = "CdxftNgFXEj2GKYZ" # Senin API anahtarın
+        api_key = "xsmtpsib-58143ee3677c653f991c625873a1366df42d4a4c4b238726ec93a6adfa8a2a3b-PAr6LCPWFYGIqhn6" # Senin API anahtarın
         
         payload = {
             "sender": {"name": "Bingöl LMS", "email": "ramazansaidgalip@gmail.com"},
