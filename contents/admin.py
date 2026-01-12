@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import WeeklyContent, Material
+from .models import *
 
 class MaterialInline(admin.TabularInline):
     """
@@ -40,3 +40,44 @@ class WeeklyContentAdmin(admin.ModelAdmin):
 
 # Material modelini isterseniz tek başına da kaydedebilirsiniz ama Inline kullanım daha pratiktir.
 admin.site.register(Material)
+
+# --- YENİ: Materyal Bazlı Tamamlama Takibi ---
+@admin.register(CompletedMaterial)
+class CompletedMaterialAdmin(admin.ModelAdmin):
+    list_display = ('student', 'get_week', 'material', 'completed_at')
+    list_filter = ('material__parent_content', 'student', 'completed_at')
+    search_fields = ('student__email', 'material__title')
+    readonly_fields = ('completed_at',)
+
+    def get_week(self, obj):
+        return f"Hafta {obj.material.parent_content.week_number}"
+    get_week.short_description = "Hafta"
+
+# --- YENİ: Hassas İlerleme Durumu (0, 33, 66, 100 vb.) ---
+@admin.register(StudentProgress)
+class StudentProgressAdmin(admin.ModelAdmin):
+    list_display = ('student', 'weekly_content', 'progress_bar', 'is_completed', 'last_accessed')
+    list_filter = ('weekly_content', 'is_completed')
+    search_fields = ('student__email', 'weekly_content__title')
+
+    # Admin panelinde görsel bir yüzde çubuğu gibi görünmesi için
+    def progress_bar(self, obj):
+        return f"%{obj.completion_percentage}"
+    progress_bar.short_description = "İlerleme"
+
+@admin.register(TimeTracking)
+class TimeTrackingAdmin(admin.ModelAdmin):
+    # Süre takibi kayıtları
+    list_display = ('student', 'weekly_content', 'formatted_duration', 'date')
+    list_filter = ('date', 'weekly_content', 'student')
+    search_fields = ('student__email', 'weekly_content__title')
+
+    # Saniyeyi Admin'de daha okunur yapmak için (Örn: 45 dk)
+    def formatted_duration(self, obj):
+        minutes = obj.duration_seconds // 60
+        if minutes < 60:
+            return f"{minutes} dk"
+        hours = minutes // 60
+        remaining_minutes = minutes % 60
+        return f"{hours} sa {remaining_minutes} dk"
+    formatted_duration.short_description = "Geçirilen Süre"
