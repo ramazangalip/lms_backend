@@ -48,7 +48,7 @@ class SendOTPView(APIView):
                 message=f'Bingöl Üniversitesi LMS sistemine kayıt için kodunuz: {otp_code}',
                 from_email='ramazansaidgalip@gmail.com',
                 recipient_list=[email],
-                fail_silently=False,
+                fail_silently=True,
             )
             return Response({"message": "Doğrulama kodu gönderildi."}, status=status.HTTP_200_OK)
         except Exception as e:

@@ -161,6 +161,7 @@ CSRF_TRUSTED_ORIGINS = [
 
 
 
+EMAIL_TIMEOUT = 10  # 10 saniye sonra beklemeyi bırak
 # Brevo (Sendinblue) SMTP Ayarları
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp-relay.brevo.com'
