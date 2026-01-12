@@ -163,8 +163,9 @@ CSRF_TRUSTED_ORIGINS = [
 
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True
+EMAIL_PORT = 465           # 587 yerine 465 dene
+EMAIL_USE_TLS = False      # 465 kullanırken TLS False olmalı
+EMAIL_USE_SSL = True       # 465 kullanırken SSL True olmalı
 EMAIL_HOST_USER = 'ramazansaidgalip@gmail.com'
 EMAIL_HOST_PASSWORD = 'lthtixxwnfdefvqn'
 DEFAULT_FROM_EMAIL = f'Bingöl LMS <{EMAIL_HOST_USER}>'
