@@ -8,6 +8,9 @@ from django.utils import timezone
 from datetime import date, timedelta
 from rest_framework.permissions import IsAdminUser
 from django.db.models import Sum
+from django.conf import settings
+from google import genai
+
 
 # contents/views.py
 
@@ -221,3 +224,52 @@ class StudentAnalyticsView(APIView):
         # Bu serializer her öğrenci için total_time_spent ve overall_progress hesaplar
         serializer = StudentAnalyticsSerializer(students, many=True)
         return Response(serializer.data)
+
+
+
+
+class AIChatView(APIView):
+    def post(self, request):
+        # Frontend'den gelen verileri alıyoruz
+        user_message = request.data.get("message")
+        week_id = request.data.get("weekly_content_id")
+
+        if not user_message:
+            return Response({"error": "Mesaj boş olamaz."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            # 1. Gemini Client ve Yanıt Oluşturma
+            client = genai.Client(api_key=settings.GEMINI_API_KEY)
+
+            response = client.models.generate_content(
+                model="gemini-pro-latest",
+                contents=user_message
+            )
+
+            # 2. Sadece Öğrencinin Sorusunu Veritabanına Kaydetme
+            # Eğer bir hafta seçiliyse ve kullanıcı login ise kaydet
+            if week_id:
+                try:
+                    weekly_content = WeeklyContent.objects.get(id=week_id)
+                    StudentQuestion.objects.create(
+                        student=request.user,
+                        weekly_content=weekly_content,
+                        question_text=user_message
+                    )
+                except WeeklyContent.DoesNotExist:
+                    print(f"Hata: {week_id} ID'li hafta bulunamadı, soru kaydedilmedi.")
+                except Exception as e:
+                    print(f"Soru kaydedilirken hata oluştu: {e}")
+
+            # 3. AI Yanıtını Frontend'e Dönme
+            return Response(
+                {"response": response.text},
+                status=status.HTTP_200_OK
+            )
+
+        except Exception as e:
+            print("GEMINI ERROR:", e)
+            return Response(
+                {"response": "Yapay zeka servisi şu an meşgul."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

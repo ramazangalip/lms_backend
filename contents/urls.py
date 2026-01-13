@@ -21,5 +21,6 @@ urlpatterns = [
     path('completed-materials-ids/', CompletedMaterialIdsView.as_view(), name='completed_mats_ids'),
     path('studentprogress/', StudentProgressListView.as_view(), name='student_progress_list'),
     path('analytics/', StudentAnalyticsView.as_view(), name='student_analytics'),
+    path('ai-chat/', AIChatView.as_view(), name='ai_chat'),
 
 ]

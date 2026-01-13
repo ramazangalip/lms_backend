@@ -81,3 +81,29 @@ class TimeTrackingAdmin(admin.ModelAdmin):
         remaining_minutes = minutes % 60
         return f"{hours} sa {remaining_minutes} dk"
     formatted_duration.short_description = "Geçirilen Süre"
+
+
+# --- YENİ: Öğrenci AI Soruları Takibi ---
+@admin.register(StudentQuestion)
+class StudentQuestionAdmin(admin.ModelAdmin):
+    """
+    Öğrencilerin AI Asistanına sorduğu soruların 
+    Admin panelinden takip edilmesini sağlar.
+    """
+    list_display = ('student', 'get_week', 'short_question', 'created_at')
+    list_filter = ('weekly_content', 'student', 'created_at')
+    search_fields = ('student__first_name', 'student__last_name', 'student__email', 'question_text')
+    readonly_fields = ('created_at',)
+    ordering = ('-created_at',) # En yeni soruyu en üstte gösterir
+
+    # Hafta bilgisini daha güzel göstermek için
+    def get_week(self, obj):
+        return f"Hafta {obj.weekly_content.week_number}"
+    get_week.short_description = "Hafta"
+
+    # Çok uzun soruların listeyi bozmaması için özet gösterim
+    def short_question(self, obj):
+        if len(obj.question_text) > 50:
+            return f"{obj.question_text[:50]}..."
+        return obj.question_text
+    short_question.short_description = "Öğrenci Sorusu"

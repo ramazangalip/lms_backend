@@ -66,3 +66,12 @@ class CompletedMaterial(models.Model):
 
     class Meta:
         unique_together = ('student', 'material')
+
+class StudentQuestion(models.Model):
+    student = models.ForeignKey(User, on_delete=models.CASCADE)
+    weekly_content = models.ForeignKey(WeeklyContent, on_delete=models.CASCADE)
+    question_text = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.student.first_name} - Hafta {self.weekly_content.week_number}"

@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import *
+from django.db.models import Sum
 
 
 class MaterialSerializer(serializers.ModelSerializer):
@@ -98,34 +99,74 @@ class StudentProgressSerializer(serializers.ModelSerializer):
         model = StudentProgress
         fields = ['id', 'weekly_content', 'week_number', 'week_title', 'is_completed', 'completion_percentage', 'last_accessed']
 
+User = get_user_model()
+
 class StudentAnalyticsSerializer(serializers.ModelSerializer):
     total_time_spent = serializers.SerializerMethodField()
     overall_progress = serializers.SerializerMethodField()
-    weekly_breakdown = serializers.SerializerMethodField() # Yeni alan
+    weekly_breakdown = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = ['id', 'first_name', 'last_name', 'email', 'total_time_spent', 'overall_progress', 'weekly_breakdown']
 
     def get_total_time_spent(self, obj):
-        trackings = TimeTracking.objects.filter(student=obj)
-        total_seconds = sum(t.duration_seconds for t in trackings)
-        return f"{total_seconds // 3600}h {(total_seconds % 3600) // 60}m"
+        total_seconds = TimeTracking.objects.filter(student=obj).aggregate(
+            total=Sum('duration_seconds')
+        )['total'] or 0
+        
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        return f"{hours} saat {minutes} dakika"
 
     def get_overall_progress(self, obj):
         total_materials = Material.objects.count()
-        if total_materials == 0: return 0
-        completed = CompletedMaterial.objects.filter(student=obj).count()
-        return round((completed / total_materials) * 100, 2)
+        if total_materials == 0:
+            return 0
+        completed_count = CompletedMaterial.objects.filter(student=obj).count()
+        progress = (completed_count / total_materials) * 100
+        return round(progress, 2)
 
     def get_weekly_breakdown(self, obj):
-        # Tüm haftaları çek ve o öğrenci için her haftanın yüzdesini hesapla
         weeks = WeeklyContent.objects.all().order_by('week_number')
         breakdown = []
+        
         for week in weeks:
             progress_obj = StudentProgress.objects.filter(student=obj, weekly_content=week).first()
+            
+            # O haftaya ait toplam saniyeyi çek
+            total_sec = TimeTracking.objects.filter(
+                student=obj, 
+                weekly_content=week
+            ).aggregate(total=Sum('duration_seconds'))['total'] or 0
+
+            # --- SÜRE FORMATLAMA MANTIĞI ---
+            if total_sec == 0:
+                duration_str = "0 saniye"
+            elif total_sec < 60:
+                duration_str = f"{total_sec} saniye"
+            elif total_sec < 3600:
+                duration_str = f"{total_sec // 60} dakika {total_sec % 60} saniye"
+            else:
+                hours = total_sec // 3600
+                minutes = (total_sec % 3600) // 60
+                duration_str = f"{hours} saat {minutes} dakika"
+
+            # --- YENİ: ÖĞRENCİ SORULARINI ÇEKME ---
+            # O öğrencinin o haftada AI'ya sorduğu soruların metinlerini liste olarak alıyoruz
+            questions = StudentQuestion.objects.filter(
+                student=obj, 
+                weekly_content=week
+            ).values_list('question_text', flat=True)
+
             breakdown.append({
                 "week_number": week.week_number,
-                "progress": progress_obj.completion_percentage if progress_obj else 0
+                "progress": progress_obj.completion_percentage if progress_obj else 0,
+                "duration": duration_str,
+                "questions": list(questions) # Frontend'deki interface ile uyumlu isim: 'questions'
             })
+            
         return breakdown
+    
+class AIChatSerializer(serializers.Serializer):
+    message = serializers.CharField(required=True, min_length=1)

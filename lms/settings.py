@@ -208,3 +208,5 @@ SIMPLE_JWT = {
     # KRİTİK SATIR: Kendi yazdığın Serializer'ı buraya tanımlamalısın
     "TOKEN_OBTAIN_SERIALIZER": "users.serializers.MyTokenObtainPairSerializer",
 }
+
+GEMINI_API_KEY = "AIzaSyDkpKJzgYHmLRb627KcMzRneEu7xH6o85c"
