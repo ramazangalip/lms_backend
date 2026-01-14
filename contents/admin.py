@@ -107,3 +107,46 @@ class StudentQuestionAdmin(admin.ModelAdmin):
             return f"{obj.question_text[:50]}..."
         return obj.question_text
     short_question.short_description = "Öğrenci Sorusu"
+
+# --- YENİ: Quiz / Test Sonuçları Takibi ---
+
+class StudentAnswerInline(admin.TabularInline):
+    """
+    Hoca, öğrencinin sınav detayına baktığında 
+    hangi soruya ne cevap verdiğini (doğru/yanlış) satır satır görür.
+    """
+    model = StudentAnswer
+    extra = 0
+    readonly_fields = ('question', 'selected_option', 'is_correct')
+    can_delete = False
+
+@admin.register(StudentQuizAttempt)
+class StudentQuizAttemptAdmin(admin.ModelAdmin):
+    """
+    Öğrencinin bitirdiği testlerin genel listesi.
+    """
+    list_display = ('student', 'get_week', 'quiz', 'score', 'correct_answers', 'wrong_answers', 'completed_at')
+    list_filter = ('quiz__material__parent_content', 'completed_at', 'score')
+    search_fields = ('student__first_name', 'student__last_name', 'student__email', 'quiz__title')
+    readonly_fields = ('completed_at',)
+    
+    # Öğrencinin cevaplarını bu sayfanın içinde gösteriyoruz
+    inlines = [StudentAnswerInline]
+
+    def get_week(self, obj):
+        return f"Hafta {obj.quiz.material.parent_content.week_number}"
+    get_week.short_description = "Hafta"
+
+# Opsiyonel: Quiz tanımlarını (sorular ve şıklar) yönetmek için
+class QuizOptionInline(admin.TabularInline):
+    model = QuizOption
+    extra = 4
+
+@admin.register(QuizQuestion)
+class QuizQuestionAdmin(admin.ModelAdmin):
+    list_display = ('question_text', 'quiz')
+    inlines = [QuizOptionInline]
+
+@admin.register(Quiz)
+class QuizAdmin(admin.ModelAdmin):
+    list_display = ('title', 'material')

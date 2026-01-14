@@ -22,5 +22,7 @@ urlpatterns = [
     path('studentprogress/', StudentProgressListView.as_view(), name='student_progress_list'),
     path('analytics/', StudentAnalyticsView.as_view(), name='student_analytics'),
     path('ai-chat/', AIChatView.as_view(), name='ai_chat'),
+    path('quiz/<int:quiz_id>/submit/', QuizSubmitView.as_view(), name='quiz-submit'),
+    
 
 ]

@@ -75,3 +75,70 @@ class StudentQuestion(models.Model):
 
     def __str__(self):
         return f"{self.student.first_name} - Hafta {self.weekly_content.week_number}"
+
+class Quiz(models.Model):
+    """Her bir test materyali için ana başlık"""
+    material = models.OneToOneField('Material', on_delete=models.CASCADE, related_name='quiz')
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Test: {self.title} (Hafta {self.material.parent_content.week_number})"
+
+class QuizQuestion(models.Model):
+    """Sınavın içindeki her bir soru (Resim alanı kaldırıldı)"""
+    quiz = models.ForeignKey(Quiz, on_delete=models.CASCADE, related_name='questions')
+    question_text = models.TextField()
+    order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ['order']
+
+    def __str__(self):
+        return self.question_text[:50]
+
+class QuizOption(models.Model):
+    """Soruların şıkları (A, B, C, D...)"""
+    question = models.ForeignKey(QuizQuestion, on_delete=models.CASCADE, related_name='options')
+    option_text = models.CharField(max_length=255)
+    is_correct = models.BooleanField(default=False)
+
+    def __str__(self):
+        return self.option_text
+
+class StudentQuizAttempt(models.Model):
+    """Öğrencinin genel sınav sonucu"""
+    student = models.ForeignKey(User, on_delete=models.CASCADE)
+    quiz = models.ForeignKey(Quiz, on_delete=models.CASCADE)
+    score = models.IntegerField() 
+    correct_answers = models.IntegerField()
+    wrong_answers = models.IntegerField()
+    completed_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.student.first_name} - {self.quiz.title} - %{self.score}"
+
+class StudentAnswer(models.Model):
+    """Öğrencinin her bir soruya verdiği spesifik cevap"""
+    attempt = models.ForeignKey(StudentQuizAttempt, on_delete=models.CASCADE, related_name='answers')
+    question = models.ForeignKey(QuizQuestion, on_delete=models.CASCADE)
+    selected_option = models.ForeignKey(QuizOption, on_delete=models.CASCADE)
+    is_correct = models.BooleanField()
+
+# contents/models.py
+
+class Flashcard(models.Model):
+    # BURAYI DÜZELT: on_responses -> on_delete
+    weekly_content = models.ForeignKey(
+        WeeklyContent, 
+        related_name='flashcards', 
+        on_delete=models.CASCADE  # Doğru parametre budur
+    )
+    question = models.TextField()
+    answer = models.TextField()
+    order = models.IntegerField(default=0)
+
+    class Meta:
+        ordering = ['order']
+
