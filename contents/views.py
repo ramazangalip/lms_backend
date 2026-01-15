@@ -11,6 +11,12 @@ from django.db.models import Sum
 from django.conf import settings
 from django.shortcuts import get_object_or_404
 import google as genai
+from google.cloud import aiplatform # Yeni kütüphane
+import requests
+from google.auth import default
+from google.auth.transport.requests import Request as AuthRequest
+import vertexai
+from vertexai.generative_models import GenerativeModel
 
 # --- ANA İÇERİK VIEW ---
 
@@ -225,11 +231,23 @@ class AIChatView(APIView):
             return Response({"error": "Mesaj boş olamaz."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            genai.configure(api_key=settings.GEMINI_API_KEY)
-            model = genai.GenerativeModel("gemini-pro")
+            # 1. Vertex AI Proje Ayarları
+            PROJECT_ID = "398808058924"
+            LOCATION = "us-central1"
+            # Senin yeni Endpoint ID'n (aslında model adı olarak kullanılır)
+            ENDPOINT_ID = "3795882475478056960"
 
+            vertexai.init(project=PROJECT_ID, location=LOCATION)
+
+            # 2. Eğittiğin Özel Modeli Yükle
+            # Tuned (eğitilmiş) modelini endpoint ID'si üzerinden çağırıyoruz
+            model = GenerativeModel(f"projects/{PROJECT_ID}/locations/{LOCATION}/endpoints/{ENDPOINT_ID}")
+
+            # 3. Yanıt Oluştur
             response = model.generate_content(user_message)
+            ai_response_text = response.text
 
+            # 4. Veritabanı Kaydı (Mevcut mantığın)
             if week_id:
                 try:
                     weekly_content = WeeklyContent.objects.get(id=week_id)
@@ -241,12 +259,14 @@ class AIChatView(APIView):
                 except WeeklyContent.DoesNotExist:
                     pass
 
-            return Response({"response": response.text}, status=status.HTTP_200_OK)
+            return Response({"response": ai_response_text}, status=status.HTTP_200_OK)
 
         except Exception as e:
-            print("GEMINI ERROR:", e)
-            return Response({"response": "Yapay zeka servisi şu an meşgul."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
+            print("GEMINI VERTEX ERROR:", str(e))
+            return Response(
+                {"response": "Yapay zeka asistanı şu an yanıt oluşturamıyor."}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 # --- QUIZ (SINAV) SİSTEMİ ---
 
 class QuizSubmitView(APIView):
