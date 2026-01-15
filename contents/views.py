@@ -17,6 +17,9 @@ from google.auth import default
 from google.auth.transport.requests import Request as AuthRequest
 import vertexai
 from vertexai.generative_models import GenerativeModel
+from google.oauth2 import service_account
+import os
+import json
 
 # --- ANA İÇERİK VIEW ---
 
@@ -231,32 +234,44 @@ class AIChatView(APIView):
             return Response({"error": "Mesaj boş olamaz."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            # 1. Vertex AI Proje Ayarları
+            # 1. Ayarlar
             PROJECT_ID = "398808058924"
             LOCATION = "us-central1"
-            # Senin yeni Endpoint ID'n (aslında model adı olarak kullanılır)
             ENDPOINT_ID = "3795882475478056960"
 
-            vertexai.init(project=PROJECT_ID, location=LOCATION)
+            # 2. Yetkilendirme (Koyeb Environment Variable'dan okuma)
+            creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+            
+            if creds_json:
+                # Cloud ortamındaysak (Koyeb)
+                creds_dict = json.loads(creds_json)
+                credentials = service_account.Credentials.from_service_account_info(creds_dict)
+                vertexai.init(project=PROJECT_ID, location=LOCATION, credentials=credentials)
+            else:
+                # Local ortamındaysak (gcloud auth login yapılmışsa)
+                vertexai.init(project=PROJECT_ID, location=LOCATION)
 
-            # 2. Eğittiğin Özel Modeli Yükle
-            # Tuned (eğitilmiş) modelini endpoint ID'si üzerinden çağırıyoruz
+            # 3. Model ve Yanıt Oluşturma
             model = GenerativeModel(f"projects/{PROJECT_ID}/locations/{LOCATION}/endpoints/{ENDPOINT_ID}")
-
-            # 3. Yanıt Oluştur
+            
             response = model.generate_content(user_message)
             ai_response_text = response.text
 
-            # 4. Veritabanı Kaydı (Mevcut mantığın)
+            # 4. Veritabanı Kaydı
             if week_id:
                 try:
+                    # Not: Model sınıflarının (WeeklyContent, StudentQuestion) 
+                    # import edildiğinden emin ol.
+                    from .models import WeeklyContent, StudentQuestion 
+                    
                     weekly_content = WeeklyContent.objects.get(id=week_id)
                     StudentQuestion.objects.create(
                         student=request.user,
                         weekly_content=weekly_content,
                         question_text=user_message
                     )
-                except WeeklyContent.DoesNotExist:
+                except Exception as db_err:
+                    print(f"DB Kayıt Hatası: {db_err}")
                     pass
 
             return Response({"response": ai_response_text}, status=status.HTTP_200_OK)
@@ -264,7 +279,7 @@ class AIChatView(APIView):
         except Exception as e:
             print("GEMINI VERTEX ERROR:", str(e))
             return Response(
-                {"response": "Yapay zeka asistanı şu an yanıt oluşturamıyor."}, 
+                {"response": "Yapay zeka asistanı şu an yanıt oluşturamıyor. Lütfen daha sonra tekrar deneyin."}, 
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 # --- QUIZ (SINAV) SİSTEMİ ---
