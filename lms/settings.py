@@ -152,11 +152,13 @@ AUTH_USER_MODEL = 'users.User'
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "https://yapayzekadesteklisinifs.onrender.com", 
+    "https://yapayzekadesteklisinifs.vercel.app",
 ]
 
 
 CSRF_TRUSTED_ORIGINS = [
     "https://yapayzekadesteklisinifs.onrender.com",
+    "https://yapayzekadesteklisinifs.vercel.app",
 ]
 
 
