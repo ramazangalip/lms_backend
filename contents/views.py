@@ -235,9 +235,9 @@ class AIChatView(APIView):
 
         try:
             # 1. Ayarlar
-            PROJECT_ID = "398808058924"
+            PROJECT_ID = "lmsproject-484210"
             LOCATION = "us-central1"
-            ENDPOINT_ID = "3795882475478056960"
+            ENDPOINT_ID = "981343814604029952"
 
             # 2. Yetkilendirme (Koyeb Environment Variable'dan okuma)
             creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
