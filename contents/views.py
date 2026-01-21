@@ -11,7 +11,7 @@ from django.db.models import Sum
 from django.conf import settings
 from django.shortcuts import get_object_or_404
 import google as genai
-from google.cloud import aiplatform # Yeni kütüphane
+from google.cloud import aiplatform
 import requests
 from google.auth import default
 from google.auth.transport.requests import Request as AuthRequest
@@ -21,19 +21,28 @@ from google.oauth2 import service_account
 import os
 import json
 
+# --- YARDIMCI FONKSİYONLAR (KOD TEKRARINI ÖNLER) ---
+
+def init_vertex_ai():
+    """Vertex AI bağlantısını merkezi olarak yönetir."""
+    PROJECT_ID = "lmsproject-484210"
+    LOCATION = "us-central1"
+    creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+    
+    if creds_json:
+        creds_dict = json.loads(creds_json)
+        credentials = service_account.Credentials.from_service_account_info(creds_dict)
+        vertexai.init(project=PROJECT_ID, location=LOCATION, credentials=credentials)
+    else:
+        vertexai.init(project=PROJECT_ID, location=LOCATION)
+    return PROJECT_ID, LOCATION
+
 # --- ANA İÇERİK VIEW ---
 
 class WeeklyContentView(APIView):
-    """
-    Hem öğrencilerin içerikleri listelemesi hem de hocaların içerik eklemesi/güncellemesi
-    için kullanılan ana View.
-    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        """
-        Eğer sorguda ?week_number=1 varsa sadece o haftayı, yoksa tüm listeyi getirir.
-        """
         week_number = request.query_params.get('week_number')
         if week_number:
             content = WeeklyContent.objects.filter(week_number=week_number).first()
@@ -47,43 +56,22 @@ class WeeklyContentView(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def post(self, request):
-        """
-        Sadece hocaların içerik eklemesine veya mevcut haftayı güncellemesine izin verir.
-        """
         if not getattr(request.user, 'is_teacher', False):
-            return Response(
-                {"error": "İçerik ekleme yetkiniz bulunmamaktadır."}, 
-                status=status.HTTP_403_FORBIDDEN
-            )
+            return Response({"error": "İçerik ekleme yetkiniz bulunmamaktadır."}, status=status.HTTP_403_FORBIDDEN)
 
         serializer = WeeklyContentSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
             serializer.save()
             return Response(serializer.data, status=status.HTTP_201_CREATED)
-        
-        # --- DEBUG ÇIKTISI (400 Hatasını Çözmek İçin Terminale Bak) ---
-        print("\n" + "="*50)
-        print("!!! SERIALIZER DOĞRULAMA HATASI (400 BAD REQUEST) !!!")
-        print(f"Hata Detayı: {serializer.errors}")
-        print("="*50 + "\n")
-        
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class ContentDetailView(APIView):
-    """
-    Belirli bir haftanın tüm materyallerini getirmek için kullanılır.
-    """
     permission_classes = [IsAuthenticated]
 
     def get(self, request, week_number):
         content = WeeklyContent.objects.filter(week_number=week_number).first()
-        
         if not content:
-            return Response(
-                {"error": f"{week_number}. hafta içeriği henüz yüklenmemiş."},
-                status=status.HTTP_404_NOT_FOUND
-            )
-            
+            return Response({"error": f"{week_number}. hafta içeriği henüz yüklenmemiş."}, status=status.HTTP_404_NOT_FOUND)
         serializer = WeeklyContentSerializer(content, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -102,8 +90,7 @@ class TrackActivityView(APIView):
         
         try:
             weekly_content = WeeklyContent.objects.get(id=weekly_content_id)
-            
-            tracking, created = TimeTracking.objects.get_or_create(
+            tracking, _ = TimeTracking.objects.get_or_create(
                 student=request.user,
                 weekly_content=weekly_content,
                 date=date.today()
@@ -111,14 +98,8 @@ class TrackActivityView(APIView):
             tracking.duration_seconds += seconds
             tracking.save()
 
-            progress, _ = StudentProgress.objects.get_or_create(
-                student=request.user,
-                weekly_content=weekly_content
-            )
-            progress.save() 
-
+            StudentProgress.objects.get_or_create(student=request.user, weekly_content=weekly_content)
             return Response({"status": "success"}, status=status.HTTP_200_OK)
-            
         except WeeklyContent.DoesNotExist:
             return Response({"error": "Haftalık içerik bulunamadı."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -134,41 +115,24 @@ class CompleteMaterialView(APIView):
         material = get_object_or_404(Material, id=material_id)
         weekly_content = material.parent_content
         
-        CompletedMaterial.objects.get_or_create(
-            student=request.user,
-            material=material
-        )
+        CompletedMaterial.objects.get_or_create(student=request.user, material=material)
 
         total_materials = weekly_content.materials.count()
-        completed_count = CompletedMaterial.objects.filter(
-            student=request.user,
-            material__parent_content=weekly_content
-        ).count()
+        completed_count = CompletedMaterial.objects.filter(student=request.user, material__parent_content=weekly_content).count()
 
         percentage = (completed_count / total_materials) * 100 if total_materials > 0 else 0
-
-        progress, _ = StudentProgress.objects.get_or_create(
-            student=request.user,
-            weekly_content=weekly_content
-        )
-        
+        progress, _ = StudentProgress.objects.get_or_create(student=request.user, weekly_content=weekly_content)
         progress.completion_percentage = round(percentage, 2)
         progress.is_completed = (percentage >= 100)
         progress.save()
 
-        return Response({
-            "status": "success",
-            "current_percentage": progress.completion_percentage,
-            "progress": f"{completed_count}/{total_materials} materyal tamamlandı"
-        }, status=status.HTTP_200_OK)
+        return Response({"status": "success", "current_percentage": progress.completion_percentage}, status=status.HTTP_200_OK)
 
 class CompletedMaterialIdsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        completed_ids = CompletedMaterial.objects.filter(
-            student=request.user
-        ).values_list('material_id', flat=True)
+        completed_ids = CompletedMaterial.objects.filter(student=request.user).values_list('material_id', flat=True)
         return Response(list(completed_ids))
 
 class StudentProgressListView(APIView):
@@ -179,7 +143,7 @@ class StudentProgressListView(APIView):
         serializer = StudentProgressSerializer(progresses, many=True)
         return Response(serializer.data)
 
-# --- ANALİZ VE HOCA PANELİ ---
+# --- HOCA PANELİ VE ANALİTİKLER ---
 
 class TeacherAnalyticsView(APIView):
     permission_classes = [IsAdminUser] 
@@ -189,25 +153,10 @@ class TeacherAnalyticsView(APIView):
             try:
                 student = User.objects.get(id=student_id)
                 one_week_ago = timezone.now().date() - timedelta(days=7)
-                
-                time_stats = TimeTracking.objects.filter(
-                    student=student,
-                    date__gte=one_week_ago
-                ).values('weekly_content__title', 'weekly_content__week_number').annotate(
-                    total_seconds=Sum('duration_seconds')
-                ).order_by('weekly_content__week_number')
-
-                progress_stats = StudentProgress.objects.filter(student=student).values(
-                    'weekly_content__title', 'completion_percentage', 'is_completed'
-                )
-
-                return Response({
-                    "student_info": f"{student.first_name} {student.last_name}",
-                    "weekly_analysis": list(time_stats),
-                    "progress_analysis": list(progress_stats)
-                })
-            except User.DoesNotExist:
-                return Response({"error": "Öğrenci bulunamadı."}, status=404)
+                time_stats = TimeTracking.objects.filter(student=student, date__gte=one_week_ago).values('weekly_content__title', 'weekly_content__week_number').annotate(total_seconds=Sum('duration_seconds')).order_by('weekly_content__week_number')
+                progress_stats = StudentProgress.objects.filter(student=student).values('weekly_content__title', 'completion_percentage', 'is_completed')
+                return Response({"student_info": f"{student.first_name} {student.last_name}", "weekly_analysis": list(time_stats), "progress_analysis": list(progress_stats)})
+            except User.DoesNotExist: return Response({"error": "Öğrenci bulunamadı."}, status=404)
         else:
             students = User.objects.filter(is_staff=False)
             serializer = StudentAnalyticsSerializer(students, many=True)
@@ -215,7 +164,6 @@ class TeacherAnalyticsView(APIView):
 
 class StudentAnalyticsView(APIView):
     permission_classes = [IsAdminUser]
-
     def get(self, request):
         students = User.objects.filter(is_staff=False)
         serializer = StudentAnalyticsSerializer(students, many=True)
@@ -229,59 +177,22 @@ class AIChatView(APIView):
     def post(self, request):
         user_message = request.data.get("message")
         week_id = request.data.get("weekly_content_id")
-
-        if not user_message:
-            return Response({"error": "Mesaj boş olamaz."}, status=status.HTTP_400_BAD_REQUEST)
+        if not user_message: return Response({"error": "Mesaj boş olamaz."}, status=400)
 
         try:
-            # 1. Ayarlar
-            PROJECT_ID = "lmsproject-484210"
-            LOCATION = "us-central1"
-            ENDPOINT_ID = "981343814604029952"
-
-            # 2. Yetkilendirme (Koyeb Environment Variable'dan okuma)
-            creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
-            
-            if creds_json:
-                # Cloud ortamındaysak (Koyeb)
-                creds_dict = json.loads(creds_json)
-                credentials = service_account.Credentials.from_service_account_info(creds_dict)
-                vertexai.init(project=PROJECT_ID, location=LOCATION, credentials=credentials)
-            else:
-                # Local ortamındaysak (gcloud auth login yapılmışsa)
-                vertexai.init(project=PROJECT_ID, location=LOCATION)
-
-            # 3. Model ve Yanıt Oluşturma
-            model = GenerativeModel(f"projects/{PROJECT_ID}/locations/{LOCATION}/endpoints/{ENDPOINT_ID}")
-            
+            p_id, loc = init_vertex_ai()
+            model = GenerativeModel(f"projects/{p_id}/locations/{loc}/endpoints/981343814604029952")
             response = model.generate_content(user_message)
             ai_response_text = response.text
 
-            # 4. Veritabanı Kaydı
             if week_id:
                 try:
-                    # Not: Model sınıflarının (WeeklyContent, StudentQuestion) 
-                    # import edildiğinden emin ol.
-                    from .models import WeeklyContent, StudentQuestion 
-                    
                     weekly_content = WeeklyContent.objects.get(id=week_id)
-                    StudentQuestion.objects.create(
-                        student=request.user,
-                        weekly_content=weekly_content,
-                        question_text=user_message
-                    )
-                except Exception as db_err:
-                    print(f"DB Kayıt Hatası: {db_err}")
-                    pass
+                    StudentQuestion.objects.create(student=request.user, weekly_content=weekly_content, question_text=user_message)
+                except: pass
+            return Response({"response": ai_response_text}, status=200)
+        except Exception as e: return Response({"response": "Asistan şu an yanıt veremiyor."}, status=500)
 
-            return Response({"response": ai_response_text}, status=status.HTTP_200_OK)
-
-        except Exception as e:
-            print("GEMINI VERTEX ERROR:", str(e))
-            return Response(
-                {"response": "Yapay zeka asistanı şu an yanıt oluşturamıyor. Lütfen daha sonra tekrar deneyin."}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
 # --- QUIZ (SINAV) SİSTEMİ ---
 
 class QuizSubmitView(APIView):
@@ -289,81 +200,70 @@ class QuizSubmitView(APIView):
 
     def post(self, request, quiz_id):
         quiz = get_object_or_404(Quiz, id=quiz_id)
-        user = request.user
-        answers_data = request.data.get('answers', [])
+        if StudentQuizAttempt.objects.filter(student=request.user, quiz=quiz).exists():
+            return Response({"error": "Bu testi zaten çözdünüz."}, status=403)
 
-        correct_count = 0
-        wrong_count = 0
-        
-        attempt = StudentQuizAttempt.objects.create(
-            student=user,
-            quiz=quiz,
-            score=0,
-            correct_answers=0,
-            wrong_answers=0
-        )
+        answers_data = request.data.get('answers', [])
+        correct_count, wrong_count = 0, 0
+        attempt = StudentQuizAttempt.objects.create(student=request.user, quiz=quiz, score=0, correct_answers=0, wrong_answers=0)
 
         for ans in answers_data:
-            q_id = ans.get('question_id')
-            opt_id = ans.get('option_id')
-            
-            question = get_object_or_404(QuizQuestion, id=q_id, quiz=quiz)
-            option = get_object_or_404(QuizOption, id=opt_id, question=question)
+            question = get_object_or_404(QuizQuestion, id=ans.get('question_id'), quiz=quiz)
+            option = get_object_or_404(QuizOption, id=ans.get('option_id'), question=question)
+            if option.is_correct: correct_count += 1
+            else: wrong_count += 1
+            StudentAnswer.objects.create(attempt=attempt, question=question, selected_option=option, is_correct=option.is_correct)
 
-            is_correct = option.is_correct
-            if is_correct:
-                correct_count += 1
-            else:
-                wrong_count += 1
-
-            StudentAnswer.objects.create(
-                attempt=attempt,
-                question=question,
-                selected_option=option,
-                is_correct=is_correct
-            )
-
-        total_questions = quiz.questions.count()
-        score = (correct_count / total_questions) * 100 if total_questions > 0 else 0
-        
-        attempt.score = round(score)
-        attempt.correct_answers = correct_count
-        attempt.wrong_answers = wrong_count
+        total = quiz.questions.count()
+        attempt.score = round((correct_count / total) * 100) if total > 0 else 0
+        attempt.correct_answers, attempt.wrong_answers = correct_count, wrong_count
         attempt.save()
 
-        # --- DÜZELTME BURADA BAŞLIYOR ---
+        CompletedMaterial.objects.get_or_create(student=request.user, material=quiz.material)
         
-        # 1. Materyali tamamlandı olarak işaretle
-        CompletedMaterial.objects.get_or_create(
-            student=user,
-            material=quiz.material
-        )
-
-        # 2. İLERLEME YÜZDESİNİ YENİDEN HESAPLA (Boş ilerleme hatasını çözer)
+        # İlerleme Güncelleme Mantığı
         weekly_content = quiz.material.parent_content
-        total_materials = weekly_content.materials.count()
-        completed_count = CompletedMaterial.objects.filter(
-            student=user,
-            material__parent_content=weekly_content
-        ).count()
+        total_mats = weekly_content.materials.count()
+        done_mats = CompletedMaterial.objects.filter(student=request.user, material__parent_content=weekly_content).count()
+        perc = (done_mats / total_mats) * 100 if total_mats > 0 else 0
+        prog, _ = StudentProgress.objects.get_or_create(student=request.user, weekly_content=weekly_content)
+        prog.completion_percentage, prog.is_completed = round(perc, 2), (perc >= 100)
+        prog.save()
 
-        new_percentage = (completed_count / total_materials) * 100 if total_materials > 0 else 0
+        return Response({"attempt_id": attempt.id, "score": attempt.score, "correct": correct_count, "wrong": wrong_count}, status=201)
 
-        # 3. StudentProgress tablosunu güncelle
-        progress_obj, _ = StudentProgress.objects.get_or_create(
-            student=user,
-            weekly_content=weekly_content
-        )
-        progress_obj.completion_percentage = round(new_percentage, 2)
-        progress_obj.is_completed = (new_percentage >= 100)
-        progress_obj.save()
+class QuizLastAttemptView(APIView):
+    """Sayfa yenilendiğinde verilerin kaybolmaması için son sınav sonucunu getirir."""
+    permission_classes = [IsAuthenticated]
 
-        # --- DÜZELTME BURADA BİTİYOR ---
+    def get(self, request, quiz_id):
+        attempt = StudentQuizAttempt.objects.filter(student=request.user, quiz_id=quiz_id).order_by('-completed_at').first()
+        if attempt:
+            return Response({
+                "id": attempt.id,
+                "score": attempt.score,
+                "correct_answers": attempt.correct_answers,
+                "wrong_answers": attempt.wrong_answers
+            }, status=200)
+        return Response({"detail": "Henüz çözülmedi"}, status=404)
 
-        return Response({
-            "score": attempt.score,
-            "correct": correct_count,
-            "wrong": wrong_count,
-            "current_week_progress": progress_obj.completion_percentage, # Bilgi için eklendi
-            "message": "Sınav başarıyla tamamlandı ve ilerlemeniz güncellendi."
-        }, status=status.HTTP_201_CREATED)
+class QuizAIAnalysisView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, attempt_id):
+        try:
+            attempt = StudentQuizAttempt.objects.get(id=attempt_id, student=request.user)
+            wrong_answers = StudentAnswer.objects.filter(attempt=attempt, is_correct=False)
+            
+            details = ""
+            for ans in wrong_answers:
+                correct_opt = QuizOption.objects.filter(question=ans.question, is_correct=True).first()
+                details += f"Soru: {ans.question.question_text}\nYanlış Cevap: {ans.selected_option.option_text}\nDoğru Cevap: {correct_opt.option_text if correct_opt else 'Bilinmiyor'}\n\n"
+
+            prompt = f"Bir eğitim danışmanı olarak, öğrencimin '{attempt.quiz.title}' sınavındaki %{attempt.score} başarısını analiz et. Hataları:\n{details}\nÖğrenciye moral ver ve neye çalışması gerektiğini söyle."
+            
+            p_id, loc = init_vertex_ai()
+            model = GenerativeModel(f"projects/{p_id}/locations/{loc}/endpoints/981343814604029952")
+            response = model.generate_content(prompt)
+            return Response({"ai_feedback": response.text}, status=200)
+        except Exception as e: return Response({"error": "Analiz başarısız."}, status=500)

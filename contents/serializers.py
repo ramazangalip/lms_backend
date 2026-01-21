@@ -238,3 +238,9 @@ class StudentProgressSerializer(serializers.ModelSerializer):
 
 class AIChatSerializer(serializers.Serializer):
     message = serializers.CharField(required=True, min_length=1)
+
+class QuizAIAnalysisSerializer(serializers.Serializer):
+    ai_feedback = serializers.CharField()
+    score = serializers.IntegerField()
+    correct_answers = serializers.IntegerField()
+    wrong_answers = serializers.IntegerField()

@@ -87,12 +87,22 @@ WSGI_APPLICATION = 'lms.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'postgres',
-        'USER': 'postgres.sbxhbuwmhjixagjvadin',
-        'PASSWORD': 'JqGsiVKJihD63Gv6',
-        'HOST': 'aws-1-ap-south-1.pooler.supabase.com',
-        'PORT': '6543',
+        'ENGINE': 'django.db.backends.oracle',
+        
+        'NAME': 'lms_medium', 
+        
+        'USER': 'ADMIN',
+        
+    
+        'PASSWORD': 'BÜ.Btmyo.2025?', 
+        
+        'OPTIONS': {
+           'config_dir': str(BASE_DIR / 'wallet'),
+           'wallet_location': str(BASE_DIR / 'wallet'),
+           
+       
+           'wallet_password': 'Btmyo.2025',
+        }
     }
 }
 
