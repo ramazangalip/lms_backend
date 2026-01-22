@@ -255,15 +255,26 @@ class QuizAIAnalysisView(APIView):
             attempt = StudentQuizAttempt.objects.get(id=attempt_id, student=request.user)
             wrong_answers = StudentAnswer.objects.filter(attempt=attempt, is_correct=False)
             
+            # Giriş yapan kullanıcının adını al (Adı yoksa kullanıcı adını kullan)
+            user_name = request.user.first_name if request.user.first_name else request.user.username
+            
             details = ""
             for ans in wrong_answers:
                 correct_opt = QuizOption.objects.filter(question=ans.question, is_correct=True).first()
                 details += f"Soru: {ans.question.question_text}\nYanlış Cevap: {ans.selected_option.option_text}\nDoğru Cevap: {correct_opt.option_text if correct_opt else 'Bilinmiyor'}\n\n"
 
-            prompt = f"Bir eğitim danışmanı olarak, öğrencimin '{attempt.quiz.title}' sınavındaki %{attempt.score} başarısını analiz et. Hataları:\n{details}\nÖğrenciye moral ver ve neye çalışması gerektiğini söyle."
+            # Prompt'u kullanıcı adına göre kişiselleştiriyoruz
+            prompt = (
+                f"Bir eğitim danışmanı olarak, öğrencim {user_name} için '{attempt.quiz.title}' sınavındaki "
+                f"%{attempt.score} başarısını analiz et. Hataları:\n{details}\n"
+                f"Lütfen mesaja direkt '{user_name}, merhaba!' veya 'Selam {user_name}!' gibi samimi bir girişle başla. "
+                f"Hatalarını nazikçe açıkla, moral ver ve gelişim için ne yapması gerektiğini söyle."
+            )
             
             p_id, loc = init_vertex_ai()
             model = GenerativeModel(f"projects/{p_id}/locations/{loc}/endpoints/981343814604029952")
             response = model.generate_content(prompt)
             return Response({"ai_feedback": response.text}, status=200)
-        except Exception as e: return Response({"error": "Analiz başarısız."}, status=500)
+            
+        except Exception as e: 
+            return Response({"error": "Analiz başarısız."}, status=500)

@@ -163,12 +163,14 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "https://yapayzekadesteklisinifs.onrender.com", 
     "https://yapayzekadesteklisinifs.vercel.app",
+    "https://www.yapayzekadesteklisinif.com.tr",
 ]
 
 
 CSRF_TRUSTED_ORIGINS = [
     "https://yapayzekadesteklisinifs.onrender.com",
     "https://yapayzekadesteklisinifs.vercel.app",
+    "https://www.yapayzekadesteklisinif.com.tr",
 ]
 
 
