@@ -7,6 +7,11 @@ class WeeklyContent(models.Model):
     week_number = models.IntegerField(unique=True, verbose_name="Hafta")
     title = models.CharField(max_length=200, verbose_name="Hafta Başlığı")
     description = models.TextField(blank=True, verbose_name="Ders Notları")
+    
+    # --- TANITIM VİDEOSU ALANLARI (Model eklemeden Hafta 1 üzerinde tutulur) ---
+    # Bu alanlar hoca panelinden Hafta 1 seçiliyken doldurulur.
+    intro_title = models.CharField(max_length=255, default="Genel Tanıtım", verbose_name="Tanıtım Başlığı")
+    intro_video_url = models.URLField(blank=True, null=True, verbose_name="Tanıtım Videosu (Embed Link)")
 
     class Meta:
         verbose_name = "Haftalık İçerik"
@@ -16,11 +21,34 @@ class WeeklyContent(models.Model):
     def __str__(self):
         return f"Hafta {self.week_number} - {self.title}"
 
+class IntroVideoCompletion(models.Model):
+    """
+    SİSTEM GENELİ TEK TANITIM VİDEOSU TAKİBİ
+    Öğrenci Hafta 1'deki videoyu bir kez izlediğinde OneToOneField sayesinde
+    tüm haftaların kilidini açan global bir anahtar görevi görür.
+    """
+    student = models.OneToOneField(
+        User, 
+        on_delete=models.CASCADE, 
+        related_name='intro_status',
+        verbose_name="Öğrenci"
+    )
+    is_watched = models.BooleanField(default=False, verbose_name="İzledi mi?")
+    watched_at = models.DateTimeField(auto_now_add=True, verbose_name="İzleme Tarihi")
+
+    class Meta:
+        verbose_name = "Genel Tanıtım Tamamlama"
+        verbose_name_plural = "Genel Tanıtım Tamamlamaları"
+
+    def __str__(self):
+        status = "Tamamladı" if self.is_watched else "Tamamlamadı"
+        return f"{self.student.email} - {status}"
+
 class Material(models.Model):
     CONTENT_TYPES = (
         ('video', 'Video'),
         ('podcast', 'Podcast'),
-        ('form', 'Google Form'),
+        ('form', 'Bilgi Testi'),
     )
     parent_content = models.ForeignKey(
         WeeklyContent, 
@@ -32,13 +60,12 @@ class Material(models.Model):
     title = models.CharField(max_length=200, verbose_name="Materyal Başlığı")
 
     def __str__(self):
-        return f"{self.get_content_type_display()} - {self.title}"
+        return f"Hafta {self.parent_content.week_number} | {self.get_content_type_display()} - {self.title}"
 
-# --- TAKİP MODELLERİ (WeeklyContent'e Bağlı) ---
+# --- TAKİP MODELLERİ ---
 
 class StudentProgress(models.Model):
     student = models.ForeignKey(User, on_delete=models.CASCADE)
-    # CourseModule yerine WeeklyContent'e bağladık
     weekly_content = models.ForeignKey(WeeklyContent, on_delete=models.CASCADE)
     is_completed = models.BooleanField(default=False)
     completion_percentage = models.FloatField(default=0.0) 
@@ -51,7 +78,6 @@ class StudentProgress(models.Model):
 
 class TimeTracking(models.Model):
     student = models.ForeignKey(User, on_delete=models.CASCADE)
-    # CourseModule yerine WeeklyContent'e bağladık
     weekly_content = models.ForeignKey(WeeklyContent, on_delete=models.CASCADE)
     duration_seconds = models.PositiveIntegerField(default=0)
     date = models.DateField(auto_now_add=True)
@@ -87,7 +113,7 @@ class Quiz(models.Model):
         return f"Test: {self.title} (Hafta {self.material.parent_content.week_number})"
 
 class QuizQuestion(models.Model):
-    """Sınavın içindeki her bir soru (Resim alanı kaldırıldı)"""
+    """Sınavın içindeki her bir soru"""
     quiz = models.ForeignKey(Quiz, on_delete=models.CASCADE, related_name='questions')
     question_text = models.TextField()
     order = models.PositiveIntegerField(default=0)
@@ -126,14 +152,11 @@ class StudentAnswer(models.Model):
     selected_option = models.ForeignKey(QuizOption, on_delete=models.CASCADE)
     is_correct = models.BooleanField()
 
-# contents/models.py
-
 class Flashcard(models.Model):
-    # BURAYI DÜZELT: on_responses -> on_delete
     weekly_content = models.ForeignKey(
         WeeklyContent, 
         related_name='flashcards', 
-        on_delete=models.CASCADE  # Doğru parametre budur
+        on_delete=models.CASCADE
     )
     question = models.TextField()
     answer = models.TextField()
@@ -141,4 +164,3 @@ class Flashcard(models.Model):
 
     class Meta:
         ordering = ['order']
-

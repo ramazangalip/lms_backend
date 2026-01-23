@@ -25,6 +25,7 @@ urlpatterns = [
     path('quiz/<int:quiz_id>/submit/', QuizSubmitView.as_view(), name='quiz-submit'),
     path('quiz-analysis/<int:attempt_id>/', QuizAIAnalysisView.as_view(), name='quiz-ai-analysis'),
     path('quiz-last-attempt/<int:quiz_id>/', QuizLastAttemptView.as_view(), name='quiz-last-attempt'),
+    path('weeks/complete-intro/', CompleteIntroVideoView.as_view(), name='complete-intro'),
     
 
 ]

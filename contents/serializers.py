@@ -7,23 +7,6 @@ User = get_user_model()
 
 # --- ALT MODELLER ---
 
-from rest_framework import serializers
-from .models import *
-from django.db.models import Sum
-from django.contrib.auth import get_user_model
-
-User = get_user_model()
-
-# --- ALT MODELLER ---
-
-from rest_framework import serializers
-from .models import *
-from django.db.models import Sum
-from django.contrib.auth import get_user_model
-
-User = get_user_model()
-
-# --- ALT MODELLER ---
 class QuizOptionSerializer(serializers.ModelSerializer):
     class Meta:
         model = QuizOption
@@ -59,53 +42,88 @@ class FlashcardSerializer(serializers.ModelSerializer):
         extra_kwargs = {'id': {'read_only': False, 'required': False}}
 
 # --- ANA SERIALIZER ---
+
 class WeeklyContentSerializer(serializers.ModelSerializer):
     materials = MaterialSerializer(many=True, required=False)
     flashcards = FlashcardSerializer(many=True, required=False)
     progress = serializers.SerializerMethodField()
     is_completed = serializers.SerializerMethodField()
+    # Tek bir genel kontrol alanı: Öğrenci genel tanıtımı izledi mi?
+    is_intro_watched = serializers.SerializerMethodField()
     week_number = serializers.IntegerField(validators=[])
 
     class Meta:
         model = WeeklyContent
-        fields = ['id', 'week_number', 'title', 'description', 'materials', 'flashcards', 'progress', 'is_completed']
+        fields = [
+            'id', 'week_number', 'title', 'description', 
+            'intro_title', 'intro_video_url', # <-- BU ALANLAR MODELDE VARSA BURAYA EKLENMELİ
+            'is_intro_watched', 'materials', 'flashcards', 'progress', 'is_completed'
+        ]
+
+    def get_is_intro_watched(self, obj):
+        """
+        Öğrencinin Oryantasyon videosunu (Hafta 1 videosu) izleyip izlemediğine bak.
+        """
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            if getattr(request.user, 'is_teacher', False):
+                return True
+            
+            # Öğrencinin tekil IntroVideoCompletion kaydına bakılır
+            from .models import IntroVideoCompletion
+            completion = IntroVideoCompletion.objects.filter(student=request.user).first()
+            return completion.is_watched if completion else False
+        return False
 
     def get_progress(self, obj):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             progress_obj = StudentProgress.objects.filter(student=request.user, weekly_content=obj).first()
-            if progress_obj: return progress_obj.completion_percentage
+            if progress_obj: 
+                return progress_obj.completion_percentage
         return 0
 
     def get_is_completed(self, obj):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             progress_obj = StudentProgress.objects.filter(student=request.user, weekly_content=obj).first()
-            if progress_obj: return progress_obj.is_completed
+            if progress_obj: 
+                return progress_obj.is_completed
         return False
 
     def create(self, validated_data):
-        # 1. Verileri ayıkla
+        # 1. İlişkili verileri ve kilit alanlarını ayıkla
         mats_data = validated_data.pop('materials', [])
         cards_data = validated_data.pop('flashcards', [])
         w_num = validated_data.get('week_number')
+        
+        i_title = validated_data.get('intro_title', 'Genel Tanıtım')
+        i_url = validated_data.get('intro_video_url', '')
 
-        # 2. Haftayı oluştur veya güncelle
+        # 2. Haftayı oluştur veya güncelle 
         content, _ = WeeklyContent.objects.update_or_create(
             week_number=w_num,
             defaults={
                 'title': validated_data.get('title'),
                 'description': validated_data.get('description'),
+                'intro_title': i_title,
+                'intro_video_url': i_url,
             }
         )
 
-        # 3. Materyalleri İşle
+        # 3. Eğer hoca Hafta 1'i güncelliyorsa, oryantasyon verisini oraya da sabitle
+        # Bu işlem intro_video_url'in veritabanına kalıcı yazılmasını sağlar.
+        if w_num == 1:
+            content.intro_title = i_title
+            content.intro_video_url = i_url
+            content.save()
+
+        # 4. Materyalleri İşle
         keep_mat_ids = []
         for m_item in mats_data:
             q_data = m_item.pop('quiz', None)
             m_id = m_item.get('id')
 
-            # Elle atama yaparak hata riskini bitiriyoruz
             if m_id and Material.objects.filter(id=m_id).exists():
                 mat_obj = Material.objects.get(id=m_id)
                 mat_obj.title = m_item.get('title', mat_obj.title)
@@ -117,7 +135,6 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
             
             keep_mat_ids.append(mat_obj.id)
 
-            # Quiz İşlemi
             if mat_obj.content_type == 'form' and q_data:
                 Quiz.objects.filter(material=mat_obj).delete()
                 qs_list = q_data.pop('questions', [])
@@ -128,7 +145,7 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
                     for o_val in opts_list:
                         QuizOption.objects.create(question=question_instance, **o_val)
 
-        # 4. Flashcardları İşle (En güvenli yöntem)
+        # 5. Flashcardları İşle
         keep_card_ids = []
         for idx, c_item in enumerate(cards_data):
             c_id = c_item.get('id')
@@ -139,24 +156,19 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
                 card_obj.order = idx
                 card_obj.save()
             else:
-                card_obj = Flashcard.objects.create(
-                    weekly_content=content,
-                    question=c_item.get('question'),
-                    answer=c_item.get('answer'),
-                    order=idx
-                )
+                card_obj = Flashcard.objects.create(weekly_content=content, question=c_item.get('question'), answer=c_item.get('answer'), order=idx)
             keep_card_ids.append(card_obj.id)
 
-        # 5. Silinenleri Temizle
         content.materials.exclude(id__in=keep_mat_ids).delete()
         content.flashcards.exclude(id__in=keep_card_ids).delete()
 
         return content
 
-# --- ANALİZ SERIALIZERLARINI BURAYA EKLE (KODUNUN KALAN KISMI) ---
+# --- DİĞER SERIALIZERLAR ---
 
-
-# --- ANALİZ VE DİĞER SERIALIZERLAR (DEĞİŞMEDİ) ---
+class IntroCompleteSerializer(serializers.Serializer):
+    # Artık global bir kilit olduğu için parametre gerekmeyebilir ama uyumluluk için durabilir
+    weekly_content_id = serializers.IntegerField(required=False)
 
 class ActivityTrackSerializer(serializers.Serializer):
     weekly_content_id = serializers.IntegerField()
@@ -182,49 +194,31 @@ class StudentAnalyticsSerializer(serializers.ModelSerializer):
         return round((completed_count / total_materials) * 100, 2)
 
     def get_weekly_breakdown(self, obj):
-            weeks = WeeklyContent.objects.all().order_by('week_number')
-            breakdown = []
-
-            for week in weeks:
-                # 1. Temel İlerleme ve Süre Verileri
-                progress_obj = StudentProgress.objects.filter(student=obj, weekly_content=week).first()
-                total_sec = TimeTracking.objects.filter(student=obj, weekly_content=week).aggregate(total=Sum('duration_seconds'))['total'] or 0
-                
-                # 2. AI Soruları
-                questions = StudentQuestion.objects.filter(student=obj, weekly_content=week).values_list('question_text', flat=True)
-                
-                # 3. Quiz Analizi (Haftalık Bazda)
-                quiz_results = []
-                
-                # attempts sorgusunda related_name'leri doğru prefetch etmek hızı artırır ve hata önler
-                attempts = StudentQuizAttempt.objects.filter(
-                    student=obj, 
-                    quiz__material__parent_content=week
-                ).select_related('quiz').prefetch_related('answers__question', 'answers__selected_option')
-
-                for attempt in attempts:
-                    for ans in attempt.answers.all():
-                        # Soruya ait asıl doğru şıkkı buluyoruz
-                        # Not: question.options senin related_name tanımlaman
-                        correct_opt = ans.question.options.filter(is_correct=True).first()
-                        
-                        quiz_results.append({
-                            "question_text": ans.question.question_text,
-                            "selected_option": ans.selected_option.option_text if ans.selected_option else "Cevapsız",
-                            "correct_option": correct_opt.option_text if correct_opt else "Belirlenmemiş",
-                            "is_correct": ans.is_correct
-                        })
-
-                # 4. Veriyi Paketleme
-                breakdown.append({
-                    "week_number": week.week_number,
-                    "progress": progress_obj.completion_percentage if progress_obj else 0,
-                    "duration": f"{total_sec // 60} dk",
-                    "questions": list(questions),
-                    "quiz_results": quiz_results # Frontend bu anahtarı (key) bekliyor
-                })
-                
-            return breakdown
+        weeks = WeeklyContent.objects.all().order_by('week_number')
+        breakdown = []
+        for week in weeks:
+            progress_obj = StudentProgress.objects.filter(student=obj, weekly_content=week).first()
+            total_sec = TimeTracking.objects.filter(student=obj, weekly_content=week).aggregate(total=Sum('duration_seconds'))['total'] or 0
+            questions = StudentQuestion.objects.filter(student=obj, weekly_content=week).values_list('question_text', flat=True)
+            quiz_results = []
+            attempts = StudentQuizAttempt.objects.filter(student=obj, quiz__material__parent_content=week).select_related('quiz').prefetch_related('answers__question', 'answers__selected_option')
+            for attempt in attempts:
+                for ans in attempt.answers.all():
+                    correct_opt = ans.question.options.filter(is_correct=True).first()
+                    quiz_results.append({
+                        "question_text": ans.question.question_text,
+                        "selected_option": ans.selected_option.option_text if ans.selected_option else "Cevapsız",
+                        "correct_option": correct_opt.option_text if correct_opt else "Belirlenmemiş",
+                        "is_correct": ans.is_correct
+                    })
+            breakdown.append({
+                "week_number": week.week_number,
+                "progress": progress_obj.completion_percentage if progress_obj else 0,
+                "duration": f"{total_sec // 60} dk",
+                "questions": list(questions),
+                "quiz_results": quiz_results
+            })
+        return breakdown
 
 class CompleteMaterialSerializer(serializers.Serializer):
     material_id = serializers.IntegerField()

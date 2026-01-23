@@ -21,7 +21,7 @@ from google.oauth2 import service_account
 import os
 import json
 
-# --- YARDIMCI FONKSİYONLAR (KOD TEKRARINI ÖNLER) ---
+# --- YARDIMCI FONKSİYONLAR ---
 
 def init_vertex_ai():
     """Vertex AI bağlantısını merkezi olarak yönetir."""
@@ -47,8 +47,16 @@ class WeeklyContentView(APIView):
         if week_number:
             content = WeeklyContent.objects.filter(week_number=week_number).first()
             if content:
+                # Tanıtım videosu verisini her zaman Hafta 1 nesnesinden çekiyoruz
+                week_one = WeeklyContent.objects.filter(week_number=1).first()
                 serializer = WeeklyContentSerializer(content, context={'request': request})
-                return Response(serializer.data, status=status.HTTP_200_OK)
+                data = serializer.data
+                
+                # Global kilit sistemi için Hafta 1 verilerini her cevaba ekle
+                if week_one:
+                    data['intro_video_url'] = week_one.intro_video_url
+                    data['intro_title'] = week_one.intro_title
+                return Response(data, status=status.HTTP_200_OK)
             return Response({"detail": "Bu hafta henüz boş."}, status=status.HTTP_404_NOT_FOUND)
             
         contents = WeeklyContent.objects.all().order_by('week_number')
@@ -56,14 +64,44 @@ class WeeklyContentView(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def post(self, request):
+        # Akademisyen kontrolü
         if not getattr(request.user, 'is_teacher', False):
             return Response({"error": "İçerik ekleme yetkiniz bulunmamaktadır."}, status=status.HTTP_403_FORBIDDEN)
 
+        # 1. Hoca panelinden gelen Oryantasyon verilerini çek
+        intro_url = request.data.get('intro_video_url')
+        intro_title = request.data.get('intro_title')
+
+        # 2. Mevcut haftayı kaydet/güncelle
         serializer = WeeklyContentSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
-            serializer.save()
+            content_instance = serializer.save()
+            
+            # 3. KRİTİK NOKTA: Eğer bir video URL'si geldiyse bunu veritabanında Hafta 1'e yaz
+            # Bu işlem hoca panelindeki "kaydolmama" sorununu çözer
+            if intro_url:
+                WeeklyContent.objects.filter(week_number=1).update(
+                    intro_video_url=intro_url,
+                    intro_title=intro_title if intro_title else "Genel Tanıtım"
+                )
+            
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class CompleteIntroVideoView(APIView):
+    """Öğrenci genel tanıtım videosunu bitirdiğinde tüm haftaların kilidi açılır."""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        # OneToOneField sayesinde her öğrenci için tek bir "izledi" kaydı tutulur
+        completion, created = IntroVideoCompletion.objects.get_or_create(student=request.user)
+        completion.is_watched = True
+        completion.save()
+        
+        return Response({
+            "status": "success", 
+            "message": "Genel tanıtım tamamlandı. Sistem kilidi açıldı."
+        })
 
 class ContentDetailView(APIView):
     permission_classes = [IsAuthenticated]
@@ -71,7 +109,7 @@ class ContentDetailView(APIView):
     def get(self, request, week_number):
         content = WeeklyContent.objects.filter(week_number=week_number).first()
         if not content:
-            return Response({"error": f"{week_number}. hafta içeriği henüz yüklenmemiş."}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"error": f"{week_number}. hafta içeriği bulunamadı."}, status=status.HTTP_404_NOT_FOUND)
         serializer = WeeklyContentSerializer(content, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -216,12 +254,12 @@ class QuizSubmitView(APIView):
 
         total = quiz.questions.count()
         attempt.score = round((correct_count / total) * 100) if total > 0 else 0
-        attempt.correct_answers, attempt.wrong_answers = correct_count, wrong_count
+        attempt.correct_answers, attempt.wrong_answers = correct_count, (total - correct_count)
         attempt.save()
 
         CompletedMaterial.objects.get_or_create(student=request.user, material=quiz.material)
         
-        # İlerleme Güncelleme Mantığı
+        # İlerleme Güncelleme
         weekly_content = quiz.material.parent_content
         total_mats = weekly_content.materials.count()
         done_mats = CompletedMaterial.objects.filter(student=request.user, material__parent_content=weekly_content).count()
@@ -230,10 +268,9 @@ class QuizSubmitView(APIView):
         prog.completion_percentage, prog.is_completed = round(perc, 2), (perc >= 100)
         prog.save()
 
-        return Response({"attempt_id": attempt.id, "score": attempt.score, "correct": correct_count, "wrong": wrong_count}, status=201)
+        return Response({"attempt_id": attempt.id, "score": attempt.score, "correct": correct_count, "wrong": (total - correct_count)}, status=201)
 
 class QuizLastAttemptView(APIView):
-    """Sayfa yenilendiğinde verilerin kaybolmaması için son sınav sonucunu getirir."""
     permission_classes = [IsAuthenticated]
 
     def get(self, request, quiz_id):
@@ -254,16 +291,14 @@ class QuizAIAnalysisView(APIView):
         try:
             attempt = StudentQuizAttempt.objects.get(id=attempt_id, student=request.user)
             wrong_answers = StudentAnswer.objects.filter(attempt=attempt, is_correct=False)
-            
-            # Giriş yapan kullanıcının adını al (Adı yoksa kullanıcı adını kullan)
             user_name = request.user.first_name if request.user.first_name else request.user.username
             
             details = ""
             for ans in wrong_answers:
                 correct_opt = QuizOption.objects.filter(question=ans.question, is_correct=True).first()
-                details += f"Soru: {ans.question.question_text}\nYanlış Cevap: {ans.selected_option.option_text}\nDoğru Cevap: {correct_opt.option_text if correct_opt else 'Bilinmiyor'}\n\n"
+                details += f"Soru: {ans.question.question_text}\nHata: {ans.selected_option.option_text}\nDoğru: {correct_opt.option_text if correct_opt else '?'}\n\n"
 
-            # Prompt'u kullanıcı adına göre kişiselleştiriyoruz
+           # --- GÜNCELLENEN PROMPT ---
             prompt = (
                 f"Bir eğitim danışmanı olarak, öğrencim {user_name} için '{attempt.quiz.title}' sınavındaki "
                 f"%{attempt.score} başarısını analiz et. Hataları:\n{details}\n"
