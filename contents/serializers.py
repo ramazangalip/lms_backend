@@ -2,6 +2,7 @@ from rest_framework import serializers
 from .models import *
 from django.db.models import Sum
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 
 User = get_user_model()
 
@@ -48,29 +49,86 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
     flashcards = FlashcardSerializer(many=True, required=False)
     progress = serializers.SerializerMethodField()
     is_completed = serializers.SerializerMethodField()
-    # Tek bir genel kontrol alanı: Öğrenci genel tanıtımı izledi mi?
     is_intro_watched = serializers.SerializerMethodField()
+    
+    # --- YENİ KİLİT ALANLARI ---
+    is_locked = serializers.SerializerMethodField()
+    lock_reason = serializers.SerializerMethodField()
+    
     week_number = serializers.IntegerField(validators=[])
 
     class Meta:
         model = WeeklyContent
         fields = [
             'id', 'week_number', 'title', 'description', 
-            'intro_title', 'intro_video_url', # <-- BU ALANLAR MODELDE VARSA BURAYA EKLENMELİ
+            'intro_title', 'intro_video_url', 'release_date',
+            'is_locked', 'lock_reason',
             'is_intro_watched', 'materials', 'flashcards', 'progress', 'is_completed'
         ]
 
+    def get_is_locked(self, obj):
+        """
+        Zaman ve Sıralı İlerleme kontrolü yaparak haftanın kilitli olup olmadığını belirler.
+        """
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return True
+        
+        # 1. Akademisyenler için kilit yoktur
+        if getattr(request.user, 'is_teacher', False) or request.user.is_staff:
+            return False
+
+        now = timezone.now()
+
+        # 2. Şart: Zaman Kilidi (Tarih bazlı kontrol)
+        if obj.release_date:
+            # Eğer model DateTimeField ise, bugünün tarihiyle (saat farkı gözetmeksizin) kıyaslayabiliriz
+            if now < obj.release_date:
+                return True
+
+        # 3. Şart: Sıralı İlerleme (Önceki hafta bitmediyse)
+        if obj.week_number > 1:
+            previous_week = WeeklyContent.objects.filter(week_number=obj.week_number - 1).first()
+            if previous_week:
+                prev_progress = StudentProgress.objects.filter(
+                    student=request.user, 
+                    weekly_content=previous_week
+                ).first()
+                
+                # Önceki hafta kaydı yoksa veya %100 tamamlanmadıysa kilitli kalır
+                if not prev_progress or not prev_progress.is_completed:
+                    return True
+        
+        return False
+
+    def get_lock_reason(self, obj):
+        """Öğrenciye kilit sebebini GG.AA.YYYY formatında döner."""
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated or getattr(request.user, 'is_teacher', False):
+            return None
+
+        now = timezone.now()
+
+        # Zaman kilidi mesajı (Format: 26.01.2026)
+        if obj.release_date and now < obj.release_date:
+            formatted_date = obj.release_date.strftime('%d.%m.%Y')
+            return f"Bu içerik {formatted_date} tarihinde erişime açılacaktır."
+
+        # Başarı kilidi mesajı
+        if obj.week_number > 1:
+            previous_week = WeeklyContent.objects.filter(week_number=obj.week_number - 1).first()
+            if previous_week:
+                prev_progress = StudentProgress.objects.filter(student=request.user, weekly_content=previous_week).first()
+                if not prev_progress or not prev_progress.is_completed:
+                    return f"Bu haftayı açmak için lütfen {obj.week_number - 1}. haftayı %100 tamamlayın."
+            
+        return None
+
     def get_is_intro_watched(self, obj):
-        """
-        Öğrencinin Oryantasyon videosunu (Hafta 1 videosu) izleyip izlemediğine bak.
-        """
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             if getattr(request.user, 'is_teacher', False):
                 return True
-            
-            # Öğrencinin tekil IntroVideoCompletion kaydına bakılır
-            from .models import IntroVideoCompletion
             completion = IntroVideoCompletion.objects.filter(student=request.user).first()
             return completion.is_watched if completion else False
         return False
@@ -79,28 +137,25 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             progress_obj = StudentProgress.objects.filter(student=request.user, weekly_content=obj).first()
-            if progress_obj: 
-                return progress_obj.completion_percentage
+            return progress_obj.completion_percentage if progress_obj else 0
         return 0
 
     def get_is_completed(self, obj):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
             progress_obj = StudentProgress.objects.filter(student=request.user, weekly_content=obj).first()
-            if progress_obj: 
-                return progress_obj.is_completed
+            return progress_obj.is_completed if progress_obj else False
         return False
 
     def create(self, validated_data):
-        # 1. İlişkili verileri ve kilit alanlarını ayıkla
         mats_data = validated_data.pop('materials', [])
         cards_data = validated_data.pop('flashcards', [])
         w_num = validated_data.get('week_number')
         
         i_title = validated_data.get('intro_title', 'Genel Tanıtım')
         i_url = validated_data.get('intro_video_url', '')
+        r_date = validated_data.get('release_date', None)
 
-        # 2. Haftayı oluştur veya güncelle 
         content, _ = WeeklyContent.objects.update_or_create(
             week_number=w_num,
             defaults={
@@ -108,17 +163,16 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
                 'description': validated_data.get('description'),
                 'intro_title': i_title,
                 'intro_video_url': i_url,
+                'release_date': r_date,
             }
         )
 
-        # 3. Eğer hoca Hafta 1'i güncelliyorsa, oryantasyon verisini oraya da sabitle
-        # Bu işlem intro_video_url'in veritabanına kalıcı yazılmasını sağlar.
         if w_num == 1:
             content.intro_title = i_title
             content.intro_video_url = i_url
             content.save()
 
-        # 4. Materyalleri İşle
+        # Materyalleri İşle
         keep_mat_ids = []
         for m_item in mats_data:
             q_data = m_item.pop('quiz', None)
@@ -138,14 +192,22 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
             if mat_obj.content_type == 'form' and q_data:
                 Quiz.objects.filter(material=mat_obj).delete()
                 qs_list = q_data.pop('questions', [])
-                quiz_instance = Quiz.objects.create(material=mat_obj, title=q_data.get('title', ''), description=q_data.get('description', ''))
+                quiz_instance = Quiz.objects.create(
+                    material=mat_obj, 
+                    title=q_data.get('title', ''), 
+                    description=q_data.get('description', '')
+                )
                 for idx, q_val in enumerate(qs_list):
                     opts_list = q_val.pop('options', [])
-                    question_instance = QuizQuestion.objects.create(quiz=quiz_instance, question_text=q_val.get('question_text', ''), order=idx)
+                    question_instance = QuizQuestion.objects.create(
+                        quiz=quiz_instance, 
+                        question_text=q_val.get('question_text', ''), 
+                        order=idx
+                    )
                     for o_val in opts_list:
                         QuizOption.objects.create(question=question_instance, **o_val)
 
-        # 5. Flashcardları İşle
+        # Flashcardları İşle
         keep_card_ids = []
         for idx, c_item in enumerate(cards_data):
             c_id = c_item.get('id')
@@ -156,7 +218,12 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
                 card_obj.order = idx
                 card_obj.save()
             else:
-                card_obj = Flashcard.objects.create(weekly_content=content, question=c_item.get('question'), answer=c_item.get('answer'), order=idx)
+                card_obj = Flashcard.objects.create(
+                    weekly_content=content, 
+                    question=c_item.get('question'), 
+                    answer=c_item.get('answer'), 
+                    order=idx
+                )
             keep_card_ids.append(card_obj.id)
 
         content.materials.exclude(id__in=keep_mat_ids).delete()

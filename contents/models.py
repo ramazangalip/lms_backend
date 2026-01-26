@@ -7,6 +7,13 @@ class WeeklyContent(models.Model):
     week_number = models.IntegerField(unique=True, verbose_name="Hafta")
     title = models.CharField(max_length=200, verbose_name="Hafta Başlığı")
     description = models.TextField(blank=True, verbose_name="Ders Notları")
+
+    release_date = models.DateTimeField(
+        null=True, 
+        blank=True, 
+        verbose_name="Erişime Açılma Tarihi",
+        help_text="Bu tarih gelmeden öğrenci içeriğe erişemez."
+    )
     
     # --- TANITIM VİDEOSU ALANLARI (Model eklemeden Hafta 1 üzerinde tutulur) ---
     # Bu alanlar hoca panelinden Hafta 1 seçiliyken doldurulur.

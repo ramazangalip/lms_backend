@@ -47,12 +47,12 @@ class WeeklyContentView(APIView):
         if week_number:
             content = WeeklyContent.objects.filter(week_number=week_number).first()
             if content:
-                # Tanıtım videosu verisini her zaman Hafta 1 nesnesinden çekiyoruz
                 week_one = WeeklyContent.objects.filter(week_number=1).first()
+                # context={'request': request} eklemek Serializer'daki is_locked metodunun 
+                # kullanıcıyı (request.user) tanıması için ZORUNLUDUR.
                 serializer = WeeklyContentSerializer(content, context={'request': request})
                 data = serializer.data
                 
-                # Global kilit sistemi için Hafta 1 verilerini her cevaba ekle
                 if week_one:
                     data['intro_video_url'] = week_one.intro_video_url
                     data['intro_title'] = week_one.intro_title
@@ -60,25 +60,22 @@ class WeeklyContentView(APIView):
             return Response({"detail": "Bu hafta henüz boş."}, status=status.HTTP_404_NOT_FOUND)
             
         contents = WeeklyContent.objects.all().order_by('week_number')
+        # Liste görünümünde de context verilmeli ki her hafta için kilit hesabı yapılabilsin
         serializer = WeeklyContentSerializer(contents, many=True, context={'request': request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def post(self, request):
-        # Akademisyen kontrolü
         if not getattr(request.user, 'is_teacher', False):
             return Response({"error": "İçerik ekleme yetkiniz bulunmamaktadır."}, status=status.HTTP_403_FORBIDDEN)
 
-        # 1. Hoca panelinden gelen Oryantasyon verilerini çek
         intro_url = request.data.get('intro_video_url')
         intro_title = request.data.get('intro_title')
+        # release_date artık request.data içinde gelecek, Serializer bunu otomatik karşılayacak
 
-        # 2. Mevcut haftayı kaydet/güncelle
         serializer = WeeklyContentSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
             content_instance = serializer.save()
             
-            # 3. KRİTİK NOKTA: Eğer bir video URL'si geldiyse bunu veritabanında Hafta 1'e yaz
-            # Bu işlem hoca panelindeki "kaydolmama" sorununu çözer
             if intro_url:
                 WeeklyContent.objects.filter(week_number=1).update(
                     intro_video_url=intro_url,
