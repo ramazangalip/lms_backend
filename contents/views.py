@@ -310,3 +310,54 @@ class QuizAIAnalysisView(APIView):
             
         except Exception as e: 
             return Response({"error": "Analiz başarısız."}, status=500)
+
+class BulkAcademicReportView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        students = User.objects.filter(is_staff=False).order_by('first_name')
+        report_data = []
+
+        for student in students:
+            weekly_stats = []
+            # Öğrencinin tüm zamanlardaki toplam süresi
+            overall_total_seconds = TimeTracking.objects.filter(student=student).aggregate(Sum('duration_seconds'))['duration_seconds__sum'] or 0
+            
+            for i in range(1, 15):
+                # O haftaya ait süre
+                duration = TimeTracking.objects.filter(
+                    student=student, 
+                    weekly_content__week_number=i
+                ).aggregate(Sum('duration_seconds'))['duration_seconds__sum'] or 0
+                
+                # --- YENİ: O haftaya ait tamamlama oranı (Progress) ---
+                progress_record = StudentProgress.objects.filter(
+                    student=student, 
+                    weekly_content__week_number=i
+                ).first()
+                progress_value = progress_record.completion_percentage if progress_record else 0
+
+                # O haftaya ait Sınav başarısı
+                attempt = StudentQuizAttempt.objects.filter(
+                    student=student, 
+                    quiz__material__parent_content__week_number=i
+                ).first()
+
+                weekly_stats.append({
+                    "week": i,
+                    "progress": float(progress_value), # Serializer ile uyumlu olması için ekledik
+                    "duration_seconds": duration,
+                    "correct": attempt.correct_answers if attempt else 0,
+                    "wrong": attempt.wrong_answers if attempt else 0,
+                    "has_quiz": True if attempt else False
+                })
+
+            report_data.append({
+                "id": str(student.id),
+                "full_name": f"{student.first_name} {student.last_name}".upper(),
+                "email": student.email,
+                "total_time": overall_total_seconds,
+                "weekly_breakdown": weekly_stats
+            })
+
+        return Response(report_data, status=status.HTTP_200_OK)

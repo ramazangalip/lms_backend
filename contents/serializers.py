@@ -305,3 +305,22 @@ class QuizAIAnalysisSerializer(serializers.Serializer):
     score = serializers.IntegerField()
     correct_answers = serializers.IntegerField()
     wrong_answers = serializers.IntegerField()
+
+
+
+class BulkWeeklyStatSerializer(serializers.Serializer):
+    """Her bir haftanın durumunu temsil eder"""
+    week = serializers.IntegerField()
+    progress = serializers.FloatField()
+    duration_seconds = serializers.IntegerField()
+    correct = serializers.IntegerField() # Eklendi
+    wrong = serializers.IntegerField()   # Eklendi
+    has_quiz = serializers.BooleanField() # Eklendi
+
+class BulkAcademicReportSerializer(serializers.Serializer):
+    """Tüm öğrenci verisini paketler"""
+    id = serializers.CharField() # ID uyuşmazlığı riskine karşı CharField daha güvenli
+    full_name = serializers.CharField()
+    email = serializers.EmailField()
+    total_time = serializers.IntegerField()
+    weekly_breakdown = BulkWeeklyStatSerializer(many=True)
