@@ -459,8 +459,23 @@ class QuizAIAnalysisView(APIView):
 
     def get(self, request, attempt_id):
         try:
-            attempt = StudentQuizAttempt.objects.get(id=attempt_id, student=request.user)
-            wrong_answers = StudentAnswer.objects.filter(attempt=attempt, is_correct=False)
+            # 1. Sınav denemesini ve ilgili öğrenciyi bul
+            attempt = get_object_or_404(StudentQuizAttempt, id=attempt_id, student=request.user)
+            
+            # 2. Haftalık içerik ve ilerleme kaydına ulaş
+            weekly_content = attempt.quiz.material.parent_content
+            progress = StudentProgress.objects.get(student=request.user, weekly_content=weekly_content)
+            
+            # --- KRİTİK 2. TUR TETİKLEME MANTIĞI ---
+            # Eğer öğrencinin en az 1 yanlışı varsa ve hala 1. turdaysa Round 2'ye geçir
+            if attempt.wrong_answers > 0 and progress.current_attempt_round == 1:
+                progress.current_attempt_round = 2
+                progress.completion_percentage = 0  # 2. turda materyalleri tekrar izlemesi için sıfırla
+                progress.save()
+            # ---------------------------------------
+
+            # 3. AI için hata detaylarını hazırla
+            wrong_answers = StudentAnswer.objects.filter(attempt=attempt, is_correct=False).select_related('question')
             user_name = request.user.first_name if request.user.first_name else request.user.username
             
             details = ""
@@ -468,7 +483,6 @@ class QuizAIAnalysisView(APIView):
                 correct_opt = QuizOption.objects.filter(question=ans.question, is_correct=True).first()
                 details += f"Soru: {ans.question.question_text}\nHata: {ans.selected_option.option_text}\nDoğru: {correct_opt.option_text if correct_opt else '?'}\n\n"
 
-           # --- GÜNCELLENEN PROMPT ---
             prompt = (
                 f"Bir eğitim danışmanı olarak, öğrencim {user_name} için '{attempt.quiz.title}' sınavındaki "
                 f"%{attempt.score} başarısını analiz et. Hataları:\n{details}\n"
@@ -476,10 +490,15 @@ class QuizAIAnalysisView(APIView):
                 f"Hatalarını nazikçe açıkla, moral ver ve gelişim için ne yapması gerektiğini söyle."
             )
             
+            # 4. Vertex AI üzerinden analizi üret
             p_id, loc = init_vertex_ai()
             model = GenerativeModel(f"projects/{p_id}/locations/{loc}/endpoints/981343814604029952")
             response = model.generate_content(prompt)
-            return Response({"ai_feedback": response.text}, status=200)
+            
+            return Response({
+                "ai_feedback": response.text,
+                "current_round": progress.current_attempt_round # Frontend'e yeni tur bilgisini dön
+            }, status=200)
             
         except Exception as e: 
             return Response({"error": "Analiz başarısız."}, status=500)
