@@ -15,10 +15,10 @@ class WeeklyContent(models.Model):
         help_text="Bu tarih gelmeden öğrenci içeriğe erişemez."
     )
     
-    # --- TANITIM VİDEOSU ALANLARI (Model eklemeden Hafta 1 üzerinde tutulur) ---
-    # Bu alanlar hoca panelinden Hafta 1 seçiliyken doldurulur.
+
     intro_title = models.CharField(max_length=255, default="Genel Tanıtım", verbose_name="Tanıtım Başlığı")
     intro_video_url = models.URLField(blank=True, null=True, verbose_name="Tanıtım Videosu (Embed Link)")
+    intro_description = models.TextField(blank=True, null=True, verbose_name="Tanıtım Metni/Açıklaması")
 
     class Meta:
         verbose_name = "Haftalık İçerik"
@@ -56,6 +56,8 @@ class Material(models.Model):
         ('video', 'Video'),
         ('podcast', 'Podcast'),
         ('form', 'Bilgi Testi'),
+        ('pdf', 'Ders Notu (PDF)'),
+        ('assignment', 'Ödev (Microsoft Form)'),
     )
     parent_content = models.ForeignKey(
         WeeklyContent, 
@@ -63,13 +65,16 @@ class Material(models.Model):
         on_delete=models.CASCADE
     )
     content_type = models.CharField(max_length=10, choices=CONTENT_TYPES)
-    embed_url = models.URLField(verbose_name="Materyal Linki")
+    embed_url = models.URLField(verbose_name="Materyal Linki", help_text="Video/Podcast embed kodu veya OneDrive PDF indirme linki.")
     title = models.CharField(max_length=200, verbose_name="Materyal Başlığı")
+    
+   
+    point_value = models.PositiveIntegerField(default=1, verbose_name="Tamamlama Puanı")
 
     def __str__(self):
-        return f"Hafta {self.parent_content.week_number} | {self.get_content_type_display()} - {self.title}"
+        return f"{self.get_content_type_display()} - {self.title}"
+    
 
-# --- TAKİP MODELLERİ ---
 
 class StudentProgress(models.Model):
     student = models.ForeignKey(User, on_delete=models.CASCADE)
@@ -77,6 +82,9 @@ class StudentProgress(models.Model):
     is_completed = models.BooleanField(default=False)
     completion_percentage = models.FloatField(default=0.0) 
     last_accessed = models.DateTimeField(auto_now=True)
+    
+    # YENİ ALAN: Öğrenci şu an hangi turda? (1 veya 2)
+    current_attempt_round = models.PositiveIntegerField(default=1, verbose_name="Aktif Deneme Turu")
 
     class Meta:
         unique_together = ('student', 'weekly_content')
@@ -86,19 +94,27 @@ class StudentProgress(models.Model):
 class TimeTracking(models.Model):
     student = models.ForeignKey(User, on_delete=models.CASCADE)
     weekly_content = models.ForeignKey(WeeklyContent, on_delete=models.CASCADE)
+    material = models.ForeignKey(Material, on_delete=models.CASCADE, null=True, blank=True)
     duration_seconds = models.PositiveIntegerField(default=0)
     date = models.DateField(auto_now_add=True)
+    
+    # YENİ ALAN: Bu süre hangi turda harcandı?
+    attempt_round = models.PositiveIntegerField(default=1)
 
     def __str__(self):
-        return f"{self.student.email} - Hafta {self.weekly_content.week_number} - {self.duration_seconds}s"
+        return f"{self.student.email} - Tur {self.attempt_round} - {self.duration_seconds}s"
     
 class CompletedMaterial(models.Model):
     student = models.ForeignKey(User, on_delete=models.CASCADE)
     material = models.ForeignKey(Material, on_delete=models.CASCADE)
     completed_at = models.DateTimeField(auto_now_add=True)
+    
+    # YENİ ALAN: Hangi turda tamamlandı?
+    attempt_round = models.PositiveIntegerField(default=1)
 
     class Meta:
-        unique_together = ('student', 'material')
+        # Artık bir öğrenci bir materyali farklı turlarda tamamlayabilir
+        unique_together = ('student', 'material', 'attempt_round')
 
 class StudentQuestion(models.Model):
     student = models.ForeignKey(User, on_delete=models.CASCADE)
@@ -141,16 +157,18 @@ class QuizOption(models.Model):
         return self.option_text
 
 class StudentQuizAttempt(models.Model):
-    """Öğrencinin genel sınav sonucu"""
     student = models.ForeignKey(User, on_delete=models.CASCADE)
     quiz = models.ForeignKey(Quiz, on_delete=models.CASCADE)
     score = models.IntegerField() 
     correct_answers = models.IntegerField()
     wrong_answers = models.IntegerField()
     completed_at = models.DateTimeField(auto_now_add=True)
+    
+    # YENİ ALAN: AI analizi öncesi (1) veya sonrası (2) deneme
+    attempt_round = models.PositiveIntegerField(default=1)
 
     def __str__(self):
-        return f"{self.student.first_name} - {self.quiz.title} - %{self.score}"
+        return f"{self.student.first_name} - Tur {self.attempt_round} - %{self.score}"
 
 class StudentAnswer(models.Model):
     """Öğrencinin her bir soruya verdiği spesifik cevap"""
@@ -159,15 +177,29 @@ class StudentAnswer(models.Model):
     selected_option = models.ForeignKey(QuizOption, on_delete=models.CASCADE)
     is_correct = models.BooleanField()
 
+# ... Diğer modellerin (WeeklyContent, Material vb.) aynı kalıyor ...
+
 class Flashcard(models.Model):
+    """
+    Flashcard'ları 'Haftalık Kaynaklar' olarak güncelliyoruz.
+    question -> Kaynağın Başlığı (Örn: Haftalık Özet PDF)
+    answer   -> OneDrive Linki
+    """
     weekly_content = models.ForeignKey(
         WeeklyContent, 
         related_name='flashcards', 
         on_delete=models.CASCADE
     )
-    question = models.TextField()
-    answer = models.TextField()
+    # Alan isimlerini veritabanını bozmamak için aynı tutuyoruz 
+    # ama açıklama ve verbose_name'leri güncelliyoruz.
+    question = models.TextField(verbose_name="Kaynak Başlığı")
+    answer = models.TextField(verbose_name="OneDrive Linki") 
     order = models.IntegerField(default=0)
 
     class Meta:
         ordering = ['order']
+        verbose_name = "Haftalık Kaynak"
+        verbose_name_plural = "Haftalık Kaynaklar"
+
+    def __str__(self):
+        return f"{self.weekly_content.week_number}. Hafta - {self.question}"

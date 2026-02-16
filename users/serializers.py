@@ -11,6 +11,7 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
         token['email'] = user.email
         token['is_teacher'] = user.is_teacher
         token['is_student'] = user.is_student
+        token['department'] = user.department  
         token['full_name'] = f"{user.first_name} {user.last_name}"
         
         return token
@@ -18,10 +19,11 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
 class RegisterSerializer(serializers.ModelSerializer):
     code = serializers.CharField(write_only=True, required=True)
     password = serializers.CharField(write_only=True, required=True, validators=[validate_password])
+    department = serializers.ChoiceField(choices=User.DEPARTMENT_CHOICES, required=True)
     
     class Meta:
         model = User
-        fields = ['email', 'password', 'first_name', 'last_name', 'code']
+        fields = ['email', 'password', 'first_name', 'last_name', 'code', 'department']
 
     def validate_email(self, value):
         if not value.endswith('@bingol.edu.tr'):
@@ -50,6 +52,7 @@ class RegisterSerializer(serializers.ModelSerializer):
             password=validated_data['password'],
             first_name=validated_data.get('first_name', ''),
             last_name=validated_data.get('last_name', ''),
+            department=validated_data.get('department'),
             is_student=True,
             is_teacher=False
         )
@@ -69,7 +72,7 @@ class PasswordResetSerializer(serializers.Serializer):
         if not value.endswith('@bingol.edu.tr'):
             raise serializers.ValidationError("Sadece @bingol.edu.tr uzantılı adresler şifre sıfırlayabilir.")
         
-        # 2. Kayıtlı Kullanıcı Kontrolü
+        
         if not User.objects.filter(email=value).exists():
             raise serializers.ValidationError("Bu e-posta adresiyle kayıtlı bir kullanıcı bulunamadı.")
         
@@ -79,25 +82,20 @@ class PasswordResetSerializer(serializers.Serializer):
         email = data.get('email')
         code = data.get('code')
 
-        # 3. OTP Kod Doğruluğu Kontrolü
         otp_record = EmailOTP.objects.filter(email=email, code=code).first()
         if not otp_record:
             raise serializers.ValidationError({"code": "Doğrulama kodu geçersiz veya hatalı."})
-        
-        # Kodun süresinin dolup dolmadığını burada kontrol edebilirsin (isteğe bağlı)
+
         
         return data
 
     def save(self):
         email = self.validated_data['email']
         new_password = self.validated_data['new_password']
-        
-        # Şifreyi güncelle
         user = User.objects.get(email=email)
         user.set_password(new_password)
         user.save()
-        
-        # Kullanılan OTP kodunu sil
+
         EmailOTP.objects.filter(email=email).delete()
         
         return user
