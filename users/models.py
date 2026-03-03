@@ -3,12 +3,12 @@ from django.contrib.auth.models import AbstractUser
 
 class User(AbstractUser):
     DEPARTMENT_CHOICES = [
-        ('ilahiyat', 'İlahiyat'),
-        ('isg', 'İş Sağlığı Ve Güvenliği'),
-        ('beslenmevediyetetik', 'Beslenme Ve Diyetetik'),
-        ('hemsirelik', 'Hemşirelik'),
-        ('saglikkurumlarıisletmeciligi', 'Sağlık Kurumları İşletmeciliği'),
-        ('webtasarimvekodlama', 'Web Tasarım Ve Kodlama'),
+        ('cocukgelisimi', 'Çocuk Gelişimi'),
+        ('diyaliz', 'Diyaliz'),
+        ('disprotezteknolojisi', 'Diş Protez Teknolojisi'),
+        ('eczanehizmetleri', 'Eczane Hizmetleri'),
+        ('fizyoterapi', 'Fizyoterapi'),
+       
 
         
     ]
