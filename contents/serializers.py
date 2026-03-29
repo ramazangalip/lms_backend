@@ -46,6 +46,18 @@ class FlashcardSerializer(serializers.ModelSerializer):
 
 # --- ANA SERIALIZER ---
 
+class PreTestOptionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PreTestOption
+        fields = ['id', 'option_text', 'is_correct']
+
+class PreTestQuestionSerializer(serializers.ModelSerializer):
+    options = PreTestOptionSerializer(many=True)
+
+    class Meta:
+        model = PreTestQuestion
+        fields = ['id', 'question_text', 'order', 'options']
+
 class WeeklyContentSerializer(serializers.ModelSerializer):
     id = serializers.CharField(read_only=True)
     materials = MaterialSerializer(many=True, required=False)
@@ -56,6 +68,7 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
     is_locked = serializers.SerializerMethodField()
     lock_reason = serializers.SerializerMethodField()
     week_number = serializers.IntegerField(validators=[])
+    pre_test_questions = serializers.SerializerMethodField() # Bunu MethodField yapalım ki Hafta 1'de gelsin
 
     class Meta:
         model = WeeklyContent
@@ -63,8 +76,14 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
             'id', 'week_number', 'title', 'description', 
             'intro_title', 'intro_video_url', 'intro_description',  # YENİ ALAN EKLENDİ
             'release_date', 'is_locked', 'lock_reason',
-            'is_intro_watched', 'materials', 'flashcards', 'progress', 'is_completed'
+            'is_intro_watched', 'materials', 'flashcards', 'progress', 'is_completed','pre_test_questions'
         ]
+    def get_pre_test_questions(self, obj):
+        # Sadece Hafta 1 isteniyorsa Ön Test sorularını gönder
+        if obj.week_number == 1:
+            questions = PreTestQuestion.objects.all()
+            return PreTestQuestionSerializer(questions, many=True).data
+        return []
 
     def get_is_locked(self, obj):
         """Zaman ve Sıralı İlerleme kontrolü yaparak haftanın kilitli olup olmadığını belirler."""
@@ -139,7 +158,7 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
         mats_data = validated_data.pop('materials', [])
         cards_data = validated_data.pop('flashcards', [])
         w_num = validated_data.get('week_number')
-        
+        pre_test_data = validated_data.pop('pre_test_questions', [])
         i_title = validated_data.get('intro_title', 'Genel Tanıtım')
         i_url = validated_data.get('intro_video_url', '')
         i_desc = validated_data.get('intro_description', '') # YENİ ALAN ALINDI
@@ -159,9 +178,20 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
 
         # Hafta 1 ise intro bilgilerini ana kilit olarak güncelle
         if w_num == 1:
+
             content.intro_title = i_title
             content.intro_video_url = i_url
             content.intro_description = i_desc # YENİ ALAN GÜNCELLENDİ
+            PreTestQuestion.objects.all().delete()
+            
+            for q_idx, q_item in enumerate(pre_test_data):
+                opts_list = q_item.pop('options', [])
+                question_obj = PreTestQuestion.objects.create(
+                    question_text=q_item.get('question_text'),
+                    order=q_idx
+                )
+                for o_item in opts_list:
+                    PreTestOption.objects.create(question=question_obj, **o_item)
             content.save()
 
         keep_mat_ids = []
@@ -227,11 +257,15 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
 
 class IntroCompleteSerializer(serializers.Serializer):
     weekly_content_id = serializers.IntegerField(required=False)
+
+
+
 class ActivityTrackSerializer(serializers.Serializer):
     weekly_content_id = serializers.CharField() 
     seconds = serializers.IntegerField(default=30)
 
 class StudentAnalyticsSerializer(serializers.ModelSerializer):
+    pre_test_data = serializers.SerializerMethodField() # Yeni alan
     total_time_spent = serializers.SerializerMethodField()
     overall_progress = serializers.SerializerMethodField()
     weekly_breakdown = serializers.SerializerMethodField()
@@ -243,8 +277,21 @@ class StudentAnalyticsSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'first_name', 'last_name', 'email', 
             'department', 'department_name', 'total_points', 
-            'total_time_spent', 'overall_progress', 'weekly_breakdown'
+            'total_time_spent', 'overall_progress', 'weekly_breakdown','pre_test_data',
         ]
+    def get_pre_test_data(self, obj):
+        """Öğrencinin karne modalında görünecek ön test verisi"""
+        from .models import PreTestResult # Import döngüsünü engellemek için burada
+        res = PreTestResult.objects.filter(student=obj).first()
+        if res:
+            return {
+                "score": res.score,
+                "correct": res.correct_answers,
+                "wrong": res.wrong_answers,
+                "is_completed": res.is_completed,
+                "date": res.completed_at.strftime('%d.%m.%Y')
+            }
+        return None
 
     def get_total_time_spent(self, obj):
         total_seconds = TimeTracking.objects.filter(student=obj).aggregate(total=Sum('duration_seconds'))['total'] or 0
@@ -405,8 +452,18 @@ class BulkAcademicReportSerializer(serializers.Serializer):
     id = serializers.CharField() 
     full_name = serializers.CharField()
     email = serializers.EmailField()
+    pre_test_score = serializers.SerializerMethodField()
     # YENİ EKLENEN ALANLAR:
     department = serializers.CharField() 
     total_points = serializers.IntegerField()
     total_time = serializers.IntegerField()
     weekly_breakdown = BulkWeeklyStatSerializer(many=True)
+
+    def get_pre_test_score(self, obj):
+        # obj burada bir User nesnesidir
+        from .models import PreTestResult
+        res = PreTestResult.objects.filter(student=obj).first()
+        if res and res.is_completed:
+            return f"%{res.score} ({res.correct_answers}D / {res.wrong_answers}Y)"
+        return "Girilmedi"
+

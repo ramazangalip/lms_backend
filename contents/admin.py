@@ -121,3 +121,49 @@ class QuizAdmin(admin.ModelAdmin):
 admin.site.register(Material)
 admin.site.register(CompletedMaterial)
 admin.site.register(Flashcard)
+
+# --- ÖN DEĞERLENDİRME (PRE-TEST) SİSTEMİ ---
+
+class PreTestOptionInline(admin.TabularInline):
+    """Ön test sorularının altına şık eklemeyi sağlar."""
+    model = PreTestOption
+    extra = 5  # Varsayılan 5 şık gelsin (A, B, C, D, E)
+
+# --- ÖN DEĞERLENDİRME (PRE-TEST) SİSTEMİ ADMİN ---
+
+class PreTestOptionInline(admin.TabularInline):
+    """Ön test sorularının içine şıkları gömer."""
+    model = PreTestOption
+    extra = 4  # Yeni soru eklerken varsayılan 4 boş şık getirir
+    fields = ('option_text', 'is_correct')
+
+@admin.register(PreTestQuestion)
+class PreTestQuestionAdmin(admin.ModelAdmin):
+    """Soru listesi ve düzenleme paneli."""
+    list_display = ('order', 'short_question', 'get_option_count')
+    ordering = ('order',)
+    inlines = [PreTestOptionInline]
+
+    def short_question(self, obj):
+        return obj.question_text[:75] + "..." if len(obj.question_text) > 75 else obj.question_text
+    short_question.short_description = "Soru Metni"
+
+    def get_option_count(self, obj):
+        return obj.options.count()
+    get_option_count.short_description = "Şık Sayısı"
+
+@admin.register(PreTestResult)
+class PreTestResultAdmin(admin.ModelAdmin):
+    """Öğrencilerin sınavdan aldığı puanları listeler."""
+    list_display = ('student_info', 'score_display', 'correct_answers', 'wrong_answers', 'is_completed', 'completed_at')
+    list_filter = ('is_completed', 'completed_at')
+    search_fields = ('student__email', 'student__first_name', 'student__last_name')
+    readonly_fields = ('completed_at', 'correct_answers', 'wrong_answers', 'score', 'is_completed') # Elle değiştirilmesin
+
+    def student_info(self, obj):
+        return f"{obj.student.first_name} {obj.student.last_name} ({obj.student.email})"
+    student_info.short_description = "Öğrenci"
+
+    def score_display(self, obj):
+        return f"%{obj.score}"
+    score_display.short_description = "Başarı Puanı"

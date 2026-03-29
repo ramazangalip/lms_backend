@@ -203,3 +203,44 @@ class Flashcard(models.Model):
 
     def __str__(self):
         return f"{self.weekly_content.week_number}. Hafta - {self.question}"
+
+# --- ÖNDEĞERLENDİRME (PRE-TEST) SİSTEMİ ---
+
+class PreTestQuestion(models.Model):
+    """Sistem girişinde sorulacak zorunlu ön test soruları"""
+    question_text = models.TextField(verbose_name="Soru Metni")
+    order = models.PositiveIntegerField(default=0, verbose_name="Sıralama")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['order']
+        verbose_name = "Ön Test Sorusu"
+        verbose_name_plural = "Ön Test Soruları"
+
+    def __str__(self):
+        return self.question_text[:50]
+
+class PreTestOption(models.Model):
+    """Ön test sorularının seçenekleri"""
+    question = models.ForeignKey(PreTestQuestion, related_name='options', on_delete=models.CASCADE)
+    option_text = models.CharField(max_length=255, verbose_name="Seçenek Metni")
+    is_correct = models.BooleanField(default=False, verbose_name="Doğru Şık mı?")
+
+    def __str__(self):
+        return f"{self.option_text} ({'Doğru' if self.is_correct else 'Yanlış'})"
+
+class PreTestResult(models.Model):
+    """Öğrencilerin ön test sonuçları ve sistem kilidini açma durumu"""
+    student = models.OneToOneField(User, on_delete=models.CASCADE, related_name='pre_test_result')
+    correct_answers = models.IntegerField(default=0, verbose_name="Doğru Sayısı")
+    wrong_answers = models.IntegerField(default=0, verbose_name="Yanlış Sayısı")
+    score = models.FloatField(default=0.0, verbose_name="Başarı Puanı")
+    is_completed = models.BooleanField(default=False, verbose_name="Tamamlandı mı?")
+    completed_at = models.DateTimeField(auto_now_add=True, verbose_name="Tamamlanma Tarihi")
+
+    class Meta:
+        verbose_name = "Ön Test Sonucu"
+        verbose_name_plural = "Ön Test Sonuçları"
+
+    def __str__(self):
+        return f"{self.student.first_name} - Skor: {self.score}"

@@ -23,6 +23,15 @@ import json
 
 # --- YARDIMCI FONKSİYONLAR ---
 
+def is_pre_requirements_met(user):
+        if user.is_staff or getattr(user, 'is_teacher', False):
+            return True
+        
+        video_watched = IntroVideoCompletion.objects.filter(student=user, is_watched=True).exists()
+        pre_test_done = PreTestResult.objects.filter(student=user, is_completed=True).exists()
+        
+        return video_watched and pre_test_done
+
 def init_vertex_ai():
     """Vertex AI bağlantısını merkezi olarak yönetir."""
     PROJECT_ID = "lmsproject-484210"
@@ -44,51 +53,99 @@ class WeeklyContentView(APIView):
 
     def get(self, request):
         week_number = request.query_params.get('week_number')
-        if week_number:
-            content = WeeklyContent.objects.filter(week_number=week_number).first()
-            if content:
-                # 1. haftayı buluyoruz (intro bilgilerini oradan kopyalamak için)
-                week_one = WeeklyContent.objects.filter(week_number=1).first()
-                
-                # context={'request': request} eklemek Serializer'daki is_locked metodunun 
-                # kullanıcıyı (request.user) tanıması için ZORUNLUDUR.
-                serializer = WeeklyContentSerializer(content, context={'request': request})
-                data = serializer.data
-                
-                # Eğer 1. hafta varsa, güncel intro bilgilerini (URL, Başlık, Metin) her hafta talebine ekle
-                if week_one:
-                    data['intro_video_url'] = week_one.intro_video_url
-                    data['intro_title'] = week_one.intro_title
-                    data['intro_description'] = week_one.intro_description # YENİ: Metin desteği eklendi
-                
-                return Response(data, status=status.HTTP_200_OK)
-            return Response({"detail": "Bu hafta henüz boş."}, status=status.HTTP_404_NOT_FOUND)
+        user = request.user
+        is_teacher_or_staff = user.is_staff or getattr(user, 'is_teacher', False)
+
+        # 1. HAFTALIK LİSTE GÖRÜNÜMÜ (Sidebar ve Dashboard için optimize edilmiş)
+        if not week_number:
+            # prefetch_related ile veritabanı sorgu sayısını minimize ediyoruz (Performans için kritik)
+            contents = WeeklyContent.objects.all().order_by('week_number').prefetch_related('materials')
+            serializer = WeeklyContentSerializer(contents, many=True, context={'request': request})
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        # 2. ÖZEL HAFTA DETAY GÖRÜNÜMÜ
+        content = WeeklyContent.objects.filter(week_number=week_number).first()
+        if not content:
+            return Response({"detail": "Bu hafta bulunamadı."}, status=status.HTTP_404_NOT_FOUND)
+
+        # --- KİLİT KONTROLÜ (Hafta 1 dışındakiler için) ---
+        if not is_teacher_or_staff and int(week_number) >= 1:
+            if not is_pre_requirements_met(user):
+                return Response(
+                    {"error": "İçerikleri açmak için Tanıtım Videosunu izlemeli ve Ön Testi bitirmelisiniz."}, 
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        # Serializer'dan veriyi al
+        serializer = WeeklyContentSerializer(content, context={'request': request})
+        data = serializer.data
+
+        # --- PERFORMANS VE ENTEGRASYON: 1. HAFTADA TÜM VERİLERİ BİRLEŞTİR ---
+        # Ayrı API isteklerini (pre-test/status vb.) ortadan kaldırmak için buraya ekliyoruz
+        if str(week_number) == "1":
+            # 1. haftayı çekiyoruz (intro bilgileri için referans)
+            week_one = content # Zaten 1. haftadayız
             
-        contents = WeeklyContent.objects.all().order_by('week_number')
-        # Liste görünümünde de context verilmeli ki her hafta için kilit hesabı yapılabilsin
-        serializer = WeeklyContentSerializer(contents, many=True, context={'request': request})
-        return Response(serializer.data, status=status.HTTP_200_OK)
+            # Intro bilgilerini ekle
+            data['intro_video_url'] = week_one.intro_video_url
+            data['intro_title'] = week_one.intro_title
+            data['intro_description'] = week_one.intro_description
+
+            # Ön Test Sorularını ekle
+            questions = PreTestQuestion.objects.all().prefetch_related('options')
+            data['pre_test_questions'] = PreTestQuestionSerializer(questions, many=True).data
+
+            # Öğrencinin Ön Test Sonucunu ekle
+            pre_res = PreTestResult.objects.filter(student=user).first()
+            data['pre_test_data'] = {
+                "is_completed": pre_res.is_completed if pre_res else False,
+                "score": int(pre_res.score) if pre_res else 0,
+                "correct": pre_res.correct_answers if pre_res else 0,
+                "wrong": pre_res.wrong_answers if pre_res else 0
+            }
+
+        return Response(data, status=status.HTTP_200_OK)
 
     def post(self, request):
+        """Hocanın içerik eklediği/güncellediği kısım"""
         if not getattr(request.user, 'is_teacher', False):
-            return Response({"error": "İçerik ekleme yetkiniz bulunmamaktadır."}, status=status.HTTP_403_FORBIDDEN)
+            return Response({"error": "Yetkiniz bulunmamaktadır."}, status=status.HTTP_403_FORBIDDEN)
 
-        # Frontend'den gelen verileri yakala
+        week_number = request.data.get('week_number')
         intro_url = request.data.get('intro_video_url')
         intro_title = request.data.get('intro_title')
-        intro_desc = request.data.get('intro_description') # YENİ: Metin bilgisini al
+        intro_desc = request.data.get('intro_description')
+        pre_test_questions = request.data.get('pre_test_questions', [])
 
         serializer = WeeklyContentSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
             content_instance = serializer.save()
             
-            # Eğer bir intro bilgisi gönderilmişse, sistem genelinde 1. haftanın intro alanlarını güncelle
-            if intro_url or intro_desc:
+            # Sadece Hafta 1 güncellenirken Ön Test ve Intro alanlarını işle
+            if str(week_number) == "1":
+                # Intro Güncelleme
                 WeeklyContent.objects.filter(week_number=1).update(
                     intro_video_url=intro_url,
                     intro_title=intro_title if intro_title else "Genel Tanıtım",
-                    intro_description=intro_desc # YENİ: Veritabanına metni kaydet
+                    intro_description=intro_desc
                 )
+
+                # Ön Test Sorularını Güncelle (Atomik)
+                if pre_test_questions:
+                    PreTestQuestion.objects.all().delete()
+                    for idx, q_data in enumerate(pre_test_questions):
+                        if q_data.get('question_text'):
+                            question_obj = PreTestQuestion.objects.create(
+                                question_text=q_data['question_text'],
+                                order=idx
+                            )
+                            for opt in q_data.get('options', []):
+                                if opt.get('option_text'):
+                                    PreTestOption.objects.create(
+                                        question=question_obj,
+                                        option_text=opt['option_text'],
+                                        is_correct=opt.get('is_correct', False)
+                                    )
             
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -111,6 +168,13 @@ class ContentDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, week_number):
+        # Kilit Kontrolü
+        if int(week_number) > 1 and not is_pre_requirements_met(request.user):
+             return Response(
+                {"error": "Haftalık içeriklere erişebilmek için Tanıtım Videosunu izlemeli ve Ön Testi tamamlamalısınız."}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         content = WeeklyContent.objects.filter(week_number=week_number).first()
         if not content:
             return Response({"error": f"{week_number}. hafta içeriği bulunamadı."}, status=status.HTTP_404_NOT_FOUND)
@@ -297,12 +361,113 @@ class TeacherAnalyticsView(APIView):
             serializer = StudentAnalyticsSerializer(students, many=True)
             return Response(serializer.data)
 
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
+from django.db.models import Sum
+from django.contrib.auth import get_user_model
+from .models import *
+
+User = get_user_model()
+
 class StudentAnalyticsView(APIView):
     permission_classes = [IsAuthenticated]
+
     def get(self, request):
-        students = User.objects.filter(is_staff=False)
-        serializer = StudentAnalyticsSerializer(students, many=True)
-        return Response(serializer.data)
+        department = request.query_params.get('department')
+
+        if not department or department == 'all':
+            return Response(
+                {"error": "Analiz verileri için bölüm seçimi zorunludur."}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # 1. ÖĞRENCİLERİ TEK SEFERDE ÇEK
+        students = User.objects.filter(
+            department=department, 
+            is_staff=False,
+            is_teacher=False 
+        ).order_by('first_name')
+
+        student_ids = list(students.values_list('id', flat=True))
+
+        # 2. TOPLU VERİ ÇEKME (DATABASE'E SADECE 4 SORGÜ DAHA)
+        all_time_tracking = list(TimeTracking.objects.filter(student_id__in=student_ids).select_related('weekly_content'))
+        all_attempts = list(StudentQuizAttempt.objects.filter(student_id__in=student_ids).select_related('quiz__material__parent_content'))
+        all_progress = list(StudentProgress.objects.filter(student_id__in=student_ids).select_related('weekly_content'))
+        all_pre_tests = {pt.student_id: pt for pt in PreTestResult.objects.filter(student_id__in=student_ids)}
+        all_questions = list(StudentQuestion.objects.filter(student_id__in=student_ids).select_related('weekly_content'))
+
+        # 3. VERİLERİ HARİTALAMA (BELLEKTE HESAPLAMA)
+        final_data = []
+        for student in students:
+            s_times = [t for t in all_time_tracking if t.student_id == student.id]
+            s_attempts = [a for a in all_attempts if a.student_id == student.id]
+            s_progress = [p for p in all_progress if p.student_id == student.id]
+            s_questions = [q for q in all_questions if q.student_id == student.id]
+            s_pre_test = all_pre_tests.get(student.id)
+
+            # Haftalık detaylar
+            weekly_stats = []
+            for i in range(1, 15):
+                # Tur 1 & 2 Süreleri
+                dur_1 = sum(t.duration_seconds for t in s_times if t.weekly_content and t.weekly_content.week_number == i and t.attempt_round == 1)
+                dur_2 = sum(t.duration_seconds for t in s_times if t.weekly_content and t.weekly_content.week_number == i and t.attempt_round == 2)
+                
+                # Sınav Sonuçları
+                att_1 = next((a for a in s_attempts if a.quiz.material.parent_content.week_number == i and a.attempt_round == 1), None)
+                att_2 = next((a for a in s_attempts if a.quiz.material.parent_content.week_number == i and a.attempt_round == 2), None)
+                
+                # İlerleme
+                prog_rec = next((p for p in s_progress if p.weekly_content and p.weekly_content.week_number == i), None)
+                
+                # O hafta sorulan AI soruları
+                week_qs = [q.question_text for q in s_questions if q.weekly_content and q.weekly_content.week_number == i]
+
+                weekly_stats.append({
+                    "week_number": i,
+                    "progress": float(prog_rec.completion_percentage) if prog_rec else 0,
+                    "duration": dur_1 + dur_2, # Toplam süre
+                    "duration_seconds": dur_1,
+                    "duration_2": dur_2,
+                    "score_1": att_1.score if att_1 else 0,
+                    "score_2": att_2.score if att_2 else 0,
+                    "correct_1": att_1.correct_answers if att_1 else 0,
+                    "wrong_1": att_1.wrong_answers if att_1 else 0,
+                    "correct_2": att_2.correct_answers if att_2 else 0,
+                    "wrong_2": att_2.wrong_answers if att_2 else 0,
+                    "questions": week_qs,
+                    # Quiz detaylarını modal için ekliyoruz
+                    "quiz_results": [] # Eğer detaylı şık analizi lazımsa buraya eklenebilir
+                })
+
+            # Genel İlerleme Ortalaması
+            overall_progress = sum(w['progress'] for w in weekly_stats) / 14 if weekly_stats else 0
+            
+            # Toplam Süre Formatı
+            total_sec = sum(t.duration_seconds for t in s_times)
+            total_time_str = f"{total_sec // 60} dk" if total_sec < 3600 else f"{total_sec // 3600} sa {(total_sec % 3600) // 60} dk"
+
+            final_data.append({
+                "id": student.id,
+                "first_name": student.first_name,
+                "last_name": student.last_name,
+                "email": student.email,
+                "department": student.department,
+                "total_points": getattr(student, 'total_points', 0),
+                "total_time_spent": total_time_str,
+                "overall_progress": round(overall_progress, 1),
+                "weekly_breakdown": weekly_stats,
+                "pre_test_data": {
+                    "score": s_pre_test.score,
+                    "correct": s_pre_test.correct_answers,
+                    "wrong": s_pre_test.wrong_answers,
+                    "date": s_pre_test.completed_at.strftime('%d.%m.%Y')
+                } if s_pre_test else None
+            })
+
+        return Response(final_data, status=status.HTTP_200_OK)
 
 # --- YAPAY ZEKA SOHBET ---
 
@@ -503,115 +668,128 @@ class QuizAIAnalysisView(APIView):
         except Exception as e: 
             return Response({"error": "Analiz başarısız."}, status=500)
 
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.permissions import IsAuthenticated, IsAdminUser
+from django.db.models import Sum
+from django.contrib.auth import get_user_model
+from .models import *
+
+User = get_user_model()
+
 class BulkAcademicReportView(APIView):
     """
     Akademisyen Paneli için toplu PDF raporu verisi sağlar.
-    Her haftanın altında o haftaya ait TÜM materyallerin detaylı sürelerini raporlar.
+    Bellek içi filtreleme ile yüksek performanslı rapor üretir.
     """
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAuthenticated, IsAdminUser]
 
     def get(self, request):
         # 1. Filtre parametresini al
-        department_filter = request.query_params.get('department', 'all')
+        department_filter = request.query_params.get('department')
         
-        # 2. Sadece öğrencileri getir (Hocalar ve adminler hariç)
-        students = User.objects.filter(is_staff=False, is_teacher=False)
+        if not department_filter or department_filter == 'all':
+            return Response(
+                {"detail": "Rapor oluşturmak için geçerli bir bölüm seçilmelidir."}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        if department_filter and department_filter != 'all':
-            students = students.filter(department=department_filter)
+        # 2. SEÇİLİ BÖLÜMDEKİ öğrencileri tek seferde getir
+        students = User.objects.filter(
+            department=department_filter,
+            is_staff=False, 
+            is_teacher=False
+        ).order_by('first_name')
         
-        students = students.order_by('first_name')
+        student_ids = list(students.values_list('id', flat=True))
+
+        # --- KRİTİK PERFORMANS ADIMI: TÜM VERİLERİ TOPLUCA ÇEK (N+1 ÖNLEYİCİ) ---
+        # Veritabanına binlerce kez gitmek yerine 4-5 büyük sorgu atıyoruz.
+        all_time_tracking = list(TimeTracking.objects.filter(student_id__in=student_ids).select_related('weekly_content', 'material'))
+        all_attempts = list(StudentQuizAttempt.objects.filter(student_id__in=student_ids).select_related('quiz__material__parent_content'))
+        all_progress = list(StudentProgress.objects.filter(student_id__in=student_ids).select_related('weekly_content'))
+        all_pre_tests = {pt.student_id: pt for pt in PreTestResult.objects.filter(student_id__in=student_ids)}
+        
+        # Haftalık içerikleri ve materyalleri belleğe al (Sorgu sayısını azaltmak için)
+        weekly_contents = list(WeeklyContent.objects.all().prefetch_related('materials'))
         
         report_data = []
 
+        # 3. Öğrenci Döngüsü (Artık veritabanına gitmiyoruz, bellekteki listeleri kullanıyoruz)
         for student in students:
+            # Bu öğrenciye ait verileri bellekte süz
+            s_times = [t for t in all_time_tracking if t.student_id == student.id]
+            s_attempts = [a for a in all_attempts if a.student_id == student.id]
+            s_progress = [p for p in all_progress if p.student_id == student.id]
+            s_pre_test = all_pre_tests.get(student.id)
+
+            # Ön Test Bilgisi
+            pre_test_info = "Girilmedi"
+            if s_pre_test:
+                pre_test_info = f"%{int(s_pre_test.score)} ({s_pre_test.correct_answers}D / {s_pre_test.wrong_answers}Y)"
+            
+            # Genel Toplam Süre (Bellekte topla)
+            overall_total_seconds = sum(t.duration_seconds for t in s_times)
+            
             weekly_stats = []
             
-            # Öğrencinin sistemdeki tüm zaman kaydı (Genel Toplam)
-            overall_total_seconds = TimeTracking.objects.filter(
-                student=student
-            ).aggregate(total=Sum('duration_seconds'))['total'] or 0
-            
-            # 14 Haftalık döngü
+            # 4. 14 Haftalık Veri Döngüsü
             for i in range(1, 15):
-                # O haftanın içerik nesnesini bul
-                week_content = WeeklyContent.objects.filter(week_number=i).first()
+                # O haftanın içerik nesnesini bellekte bul
+                week_content = next((wc for wc in weekly_contents if wc.week_number == i), None)
                 
-                # --- TUR 1 VERİLERİ ---
-                duration_1 = TimeTracking.objects.filter(
-                    student=student, 
-                    weekly_content=week_content,
-                    attempt_round=1
-                ).aggregate(total=Sum('duration_seconds'))['total'] or 0
-                
-                attempt_1 = StudentQuizAttempt.objects.filter(
-                    student=student, 
-                    quiz__material__parent_content=week_content,
-                    attempt_round=1
-                ).first()
-
-                # --- TUR 2 VERİLERİ ---
-                duration_2 = TimeTracking.objects.filter(
-                    student=student, 
-                    weekly_content=week_content,
-                    attempt_round=2
-                ).aggregate(total=Sum('duration_seconds'))['total'] or 0
-                
-                attempt_2 = StudentQuizAttempt.objects.filter(
-                    student=student, 
-                    quiz__material__parent_content=week_content,
-                    attempt_round=2
-                ).first()
-                
-                # --- MATERYAL BAZLI DETAYLI SÜRELER ---
+                # Başlangıç değerleri
+                duration_1 = 0
+                duration_2 = 0
+                correct_1, wrong_1, score_1 = 0, 0, 0
+                correct_2, wrong_2, score_2 = 0, 0, 0
                 material_details = []
+
                 if week_content:
-                    # Haftaya ait tüm materyalleri (Video, PDF, Ödev vb.) al
-                    mats = week_content.materials.all()
-                    for m in mats:
-                        # Bu öğrencinin bu spesifik materyalde harcadığı süre
-                        m_duration = TimeTracking.objects.filter(
-                            student=student,
-                            material=m
-                        ).aggregate(total=Sum('duration_seconds'))['total'] or 0
+                    # Tur 1 & 2 Süreleri
+                    duration_1 = sum(t.duration_seconds for t in s_times if t.weekly_content_id == week_content.id and t.attempt_round == 1)
+                    duration_2 = sum(t.duration_seconds for t in s_times if t.weekly_content_id == week_content.id and t.attempt_round == 2)
+                    
+                    # Sınav Denemeleri
+                    att_1 = next((a for a in s_attempts if a.quiz.material.parent_content_id == week_content.id and a.attempt_round == 1), None)
+                    if att_1:
+                        correct_1, wrong_1, score_1 = att_1.correct_answers, att_1.wrong_answers, att_1.score
                         
+                    att_2 = next((a for a in s_attempts if a.quiz.material.parent_content_id == week_content.id and a.attempt_round == 2), None)
+                    if att_2:
+                        correct_2, wrong_2, score_2 = att_2.correct_answers, att_2.wrong_answers, att_2.score
+                    
+                    # Materyal Bazlı Süreler
+                    for m in week_content.materials.all():
+                        m_dur = sum(t.duration_seconds for t in s_times if t.material_id == m.id)
                         material_details.append({
                             "title": m.title,
                             "content_type": m.content_type,
-                            "duration_seconds": m_duration
+                            "duration_seconds": m_dur
                         })
 
-                # Mevcut ilerleme durumu
-                progress_record = StudentProgress.objects.filter(
-                    student=student, 
-                    weekly_content=week_content
-                ).first()
-                progress_value = progress_record.completion_percentage if progress_record else 0
+                # İlerleme Durumu
+                prog_rec = next((p for p in s_progress if p.weekly_content_id == (week_content.id if week_content else None)), None)
+                progress_value = prog_rec.completion_percentage if prog_rec else 0
 
                 weekly_stats.append({
                     "week": i,
                     "progress": float(progress_value),
-                    
-                    # Materyal detay listesi
                     "material_details": material_details,
-                    
-                    # Tur 1
                     "duration_seconds": duration_1,
-                    "correct": attempt_1.correct_answers if attempt_1 else 0,
-                    "wrong": attempt_1.wrong_answers if attempt_1 else 0,
-                    "score_1": attempt_1.score if attempt_1 else 0,
-                    
-                    # Tur 2
+                    "correct": correct_1,
+                    "wrong": wrong_1,
+                    "score_1": score_1,
                     "duration_seconds_2": duration_2,
-                    "correct_2": attempt_2.correct_answers if attempt_2 else 0,
-                    "wrong_2": attempt_2.wrong_answers if attempt_2 else 0,
-                    "score_2": attempt_2.score if attempt_2 else 0,
-                    
-                    "has_quiz": True if (attempt_1 or attempt_2) else False,
-                    "is_round_2_started": True if (duration_2 > 0 or attempt_2) else False
+                    "correct_2": correct_2,
+                    "wrong_2": wrong_2,
+                    "score_2": score_2,
+                    "has_quiz": True if (att_1 or att_2) else False,
+                    "is_round_2_started": True if (duration_2 > 0 or att_2) else False
                 })
 
-            # Öğrenci paketini oluştur
+            # 5. Öğrenci Paketini Ana Listeye Ekle
             report_data.append({
                 "id": str(student.id),
                 "full_name": f"{student.first_name} {student.last_name}".upper(),
@@ -619,7 +797,62 @@ class BulkAcademicReportView(APIView):
                 "department": student.department,
                 "total_points": getattr(student, 'total_points', 0),
                 "total_time": overall_total_seconds,
-                "weekly_breakdown": weekly_stats
+                "weekly_breakdown": weekly_stats,
+                "pre_test_score": pre_test_info,
             })
 
         return Response(report_data, status=status.HTTP_200_OK)
+    
+class PreTestSubmitView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        answers = request.data.get('answers', []) # [{'question_id': 1, 'option_id': 5}, ...]
+        correct_count = 0
+        total_questions = PreTestQuestion.objects.count()
+
+        for ans in answers:
+            opt = PreTestOption.objects.filter(
+                id=ans['option_id'], 
+                question_id=ans['question_id']
+            ).first()
+            if opt and opt.is_correct:
+                correct_count += 1
+
+        score = (correct_count / total_questions * 100) if total_questions > 0 else 0
+        
+        result, _ = PreTestResult.objects.update_or_create(
+            student=request.user,
+            defaults={
+                'correct_answers': correct_count,
+                'wrong_answers': total_questions - correct_count,
+                'score': score,
+                'is_completed': True
+            }
+        )
+
+        return Response({"score": score, "status": "completed"}, status=200)
+
+class PreTestStatusView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        # 1. Mevcut Ön Test Sorularını Getir
+        questions = PreTestQuestion.objects.all()
+        questions_serializer = PreTestQuestionSerializer(questions, many=True)
+        
+        # 2. Öğrencinin Test Sonucunu Getir
+        result = PreTestResult.objects.filter(student=request.user).first()
+        result_data = None
+        if result:
+            result_data = {
+                "is_completed": result.is_completed,
+                "score": result.score,
+                "correct": result.correct_answers,
+                "wrong": result.wrong_answers
+            }
+            
+        return Response({
+            "questions": questions_serializer.data,
+            "result": result_data
+        }, status=status.HTTP_200_OK)

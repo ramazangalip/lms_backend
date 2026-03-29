@@ -2,6 +2,8 @@ from django.urls import path
 from .views import *
 
 urlpatterns = [
+    path('pre-test/submit/', PreTestSubmitView.as_view(), name='pre-test-submit'),
+    path('pre-test/status/', PreTestStatusView.as_view(), name='pre-test-status'),
     # Hem öğrencilerin listelemesi hem de hocaların içerik eklemesi için ortak endpoint
     path('list/', WeeklyContentView.as_view(), name='weekly_contents_list'),
     
@@ -27,6 +29,7 @@ urlpatterns = [
     path('quiz/<int:quiz_id>/last-attempt/', QuizLastAttemptView.as_view(), name='quiz-last-attempt'),
     path('weeks/complete-intro/', CompleteIntroVideoView.as_view(), name='complete-intro'),
     path('bulk-academic-report/', BulkAcademicReportView.as_view(), name='bulk-report'),
+    
     
 
 ]
