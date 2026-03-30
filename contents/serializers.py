@@ -58,35 +58,44 @@ class PreTestQuestionSerializer(serializers.ModelSerializer):
         model = PreTestQuestion
         fields = ['id', 'question_text', 'order', 'options']
 
+from rest_framework import serializers
+from django.utils import timezone
+from .models import (
+    WeeklyContent, Material, Flashcard, StudentProgress, 
+    IntroVideoCompletion, PreTestQuestion, PreTestOption, 
+    Quiz, QuizQuestion, QuizOption
+)
+# Diğer serializer'larının (MaterialSerializer vb.) yukarıda tanımlı olduğunu varsayıyoruz.
+
 class WeeklyContentSerializer(serializers.ModelSerializer):
     id = serializers.CharField(read_only=True)
     materials = MaterialSerializer(many=True, required=False)
     flashcards = FlashcardSerializer(many=True, required=False)
+    
+    # KRİTİK DEĞİŞİKLİK: MethodField yerine direkt Serializer kullanarak yazma desteği sağlıyoruz.
+    # required=False ve allow_null=True ile diğer haftalarda hata almasını önlüyoruz.
+    pre_test_questions = PreTestQuestionSerializer(many=True, required=False, allow_null=True)
+
     progress = serializers.SerializerMethodField()
     is_completed = serializers.SerializerMethodField()
     is_intro_watched = serializers.SerializerMethodField()
     is_locked = serializers.SerializerMethodField()
     lock_reason = serializers.SerializerMethodField()
     week_number = serializers.IntegerField(validators=[])
-    pre_test_questions = serializers.SerializerMethodField() # Bunu MethodField yapalım ki Hafta 1'de gelsin
 
     class Meta:
         model = WeeklyContent
         fields = [
             'id', 'week_number', 'title', 'description', 
-            'intro_title', 'intro_video_url', 'intro_description',  # YENİ ALAN EKLENDİ
+            'intro_title', 'intro_video_url', 'intro_description',
             'release_date', 'is_locked', 'lock_reason',
-            'is_intro_watched', 'materials', 'flashcards', 'progress', 'is_completed','pre_test_questions'
+            'is_intro_watched', 'materials', 'flashcards', 
+            'progress', 'is_completed', 'pre_test_questions'
         ]
-    def get_pre_test_questions(self, obj):
-        # Sadece Hafta 1 isteniyorsa Ön Test sorularını gönder
-        if obj.week_number == 1:
-            questions = PreTestQuestion.objects.all()
-            return PreTestQuestionSerializer(questions, many=True).data
-        return []
+
+    # --- ÖĞRENCİ KİLİT VE İLERLEME MANTIKLARI ---
 
     def get_is_locked(self, obj):
-        """Zaman ve Sıralı İlerleme kontrolü yaparak haftanın kilitli olup olmadığını belirler."""
         request = self.context.get('request')
         if not request or not request.user.is_authenticated:
             return True
@@ -94,9 +103,9 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
             return False
 
         now = timezone.now()
-        if obj.release_date:
-            if now < obj.release_date:
-                return True
+        if obj.release_date and now < obj.release_date:
+            return True
+
         if obj.week_number > 1:
             previous_week = WeeklyContent.objects.filter(week_number=obj.week_number - 1).first()
             if previous_week:
@@ -104,23 +113,18 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
                     student=request.user, 
                     weekly_content=previous_week
                 ).first()
-                
                 if not prev_progress or not prev_progress.is_completed:
                     return True
-        
         return False
 
     def get_lock_reason(self, obj):
-        """Öğrenciye kilit sebebini GG.AA.YYYY formatında döner."""
         request = self.context.get('request')
         if not request or not request.user.is_authenticated or getattr(request.user, 'is_teacher', False):
             return None
 
         now = timezone.now()
-
         if obj.release_date and now < obj.release_date:
-            formatted_date = obj.release_date.strftime('%d.%m.%Y')
-            return f"Bu içerik {formatted_date} tarihinde erişime açılacaktır."
+            return f"Bu içerik {obj.release_date.strftime('%d.%m.%Y')} tarihinde erişime açılacaktır."
 
         if obj.week_number > 1:
             previous_week = WeeklyContent.objects.filter(week_number=obj.week_number - 1).first()
@@ -128,14 +132,12 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
                 prev_progress = StudentProgress.objects.filter(student=request.user, weekly_content=previous_week).first()
                 if not prev_progress or not prev_progress.is_completed:
                     return f"Bu haftayı açmak için lütfen {obj.week_number - 1}. haftayı %100 tamamlayın."
-            
         return None
 
     def get_is_intro_watched(self, obj):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
-            if getattr(request.user, 'is_teacher', False):
-                return True
+            if getattr(request.user, 'is_teacher', False): return True
             completion = IntroVideoCompletion.objects.filter(student=request.user).first()
             return completion.is_watched if completion else False
         return False
@@ -154,36 +156,31 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
             return progress_obj.is_completed if progress_obj else False
         return False
 
+    # --- KAYIT VE GÜNCELLEME MANTIKLARI (POST/CREATE) ---
+
     def create(self, validated_data):
         mats_data = validated_data.pop('materials', [])
         cards_data = validated_data.pop('flashcards', [])
-        w_num = validated_data.get('week_number')
+        # pre_test_questions artık validated_data içinde doğru bir şekilde gelecek
         pre_test_data = validated_data.pop('pre_test_questions', [])
-        i_title = validated_data.get('intro_title', 'Genel Tanıtım')
-        i_url = validated_data.get('intro_video_url', '')
-        i_desc = validated_data.get('intro_description', '') # YENİ ALAN ALINDI
-        r_date = validated_data.get('release_date', None)
+        w_num = validated_data.get('week_number')
 
         content, _ = WeeklyContent.objects.update_or_create(
             week_number=w_num,
             defaults={
                 'title': validated_data.get('title'),
                 'description': validated_data.get('description'),
-                'intro_title': i_title,
-                'intro_video_url': i_url,
-                'intro_description': i_desc, # YENİ ALAN KAYDEDİLDİ
-                'release_date': r_date,
+                'intro_title': validated_data.get('intro_title', 'Genel Tanıtım'),
+                'intro_video_url': validated_data.get('intro_video_url', ''),
+                'intro_description': validated_data.get('intro_description', ''),
+                'release_date': validated_data.get('release_date', None),
             }
         )
 
-        # Hafta 1 ise intro bilgilerini ana kilit olarak güncelle
+        # HAFTA 1: Global Ön Test Sorularını Kaydetme
         if w_num == 1:
-
-            content.intro_title = i_title
-            content.intro_video_url = i_url
-            content.intro_description = i_desc # YENİ ALAN GÜNCELLENDİ
+            # Öncekileri silip temiz bir kurulum yapıyoruz
             PreTestQuestion.objects.all().delete()
-            
             for q_idx, q_item in enumerate(pre_test_data):
                 opts_list = q_item.pop('options', [])
                 question_obj = PreTestQuestion.objects.create(
@@ -194,6 +191,7 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
                     PreTestOption.objects.create(question=question_obj, **o_item)
             content.save()
 
+        # MATERYALLER
         keep_mat_ids = []
         for m_item in mats_data:
             q_data = m_item.pop('quiz', None)
@@ -228,6 +226,7 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
                     for o_val in opts_list:
                         QuizOption.objects.create(question=question_instance, **o_val)
 
+        # FLASHCARDLAR
         keep_card_ids = []
         for idx, c_item in enumerate(cards_data):
             c_id = c_item.get('id')
@@ -246,6 +245,7 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
                 )
             keep_card_ids.append(card_obj.id)
 
+        # Silinenleri temizle
         content.materials.exclude(id__in=keep_mat_ids).delete()
         content.flashcards.exclude(id__in=keep_card_ids).delete()
 

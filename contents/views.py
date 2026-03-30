@@ -375,31 +375,42 @@ class StudentAnalyticsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        department = request.query_params.get('department')
+        # 1. Kullanıcının kim olduğunu anla
+        is_teacher = getattr(request.user, 'is_teacher', False) or request.user.is_staff
+        department_param = request.query_params.get('department')
 
-        if not department or department == 'all':
-            return Response(
-                {"error": "Analiz verileri için bölüm seçimi zorunludur."}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        # 2. FİLTRELEME MANTIĞI
+        if is_teacher:
+            # EĞER HOCAYSA: Bölüm parametresi zorunlu
+            if not department_param or department_param == 'all':
+                return Response(
+                    {"error": "Analiz verileri için bölüm seçimi zorunludur."}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            # Seçili bölümdeki tüm öğrencileri getir
+            students = User.objects.filter(
+                department=department_param, 
+                is_staff=False,
+                is_teacher=False 
+            ).order_by('first_name')
+        else:
+            # EĞER ÖĞRENCİYSE: Sadece kendi verisini getir
+            students = User.objects.filter(id=request.user.id)
 
-        # 1. ÖĞRENCİLERİ TEK SEFERDE ÇEK
-        students = User.objects.filter(
-            department=department, 
-            is_staff=False,
-            is_teacher=False 
-        ).order_by('first_name')
+        # Eğer sonuçta hiç öğrenci yoksa (boş sınıf vb.) boş dön
+        if not students.exists():
+            return Response([], status=status.HTTP_200_OK)
 
         student_ids = list(students.values_list('id', flat=True))
 
-        # 2. TOPLU VERİ ÇEKME (DATABASE'E SADECE 4 SORGÜ DAHA)
+        # 3. TOPLU VERİ ÇEKME (Aynı hızda devam)
         all_time_tracking = list(TimeTracking.objects.filter(student_id__in=student_ids).select_related('weekly_content'))
         all_attempts = list(StudentQuizAttempt.objects.filter(student_id__in=student_ids).select_related('quiz__material__parent_content'))
         all_progress = list(StudentProgress.objects.filter(student_id__in=student_ids).select_related('weekly_content'))
         all_pre_tests = {pt.student_id: pt for pt in PreTestResult.objects.filter(student_id__in=student_ids)}
         all_questions = list(StudentQuestion.objects.filter(student_id__in=student_ids).select_related('weekly_content'))
 
-        # 3. VERİLERİ HARİTALAMA (BELLEKTE HESAPLAMA)
+        # 4. VERİLERİ HARİTALAMA
         final_data = []
         for student in students:
             s_times = [t for t in all_time_tracking if t.student_id == student.id]
@@ -408,27 +419,21 @@ class StudentAnalyticsView(APIView):
             s_questions = [q for q in all_questions if q.student_id == student.id]
             s_pre_test = all_pre_tests.get(student.id)
 
-            # Haftalık detaylar
             weekly_stats = []
             for i in range(1, 15):
-                # Tur 1 & 2 Süreleri
                 dur_1 = sum(t.duration_seconds for t in s_times if t.weekly_content and t.weekly_content.week_number == i and t.attempt_round == 1)
                 dur_2 = sum(t.duration_seconds for t in s_times if t.weekly_content and t.weekly_content.week_number == i and t.attempt_round == 2)
                 
-                # Sınav Sonuçları
                 att_1 = next((a for a in s_attempts if a.quiz.material.parent_content.week_number == i and a.attempt_round == 1), None)
                 att_2 = next((a for a in s_attempts if a.quiz.material.parent_content.week_number == i and a.attempt_round == 2), None)
                 
-                # İlerleme
                 prog_rec = next((p for p in s_progress if p.weekly_content and p.weekly_content.week_number == i), None)
-                
-                # O hafta sorulan AI soruları
                 week_qs = [q.question_text for q in s_questions if q.weekly_content and q.weekly_content.week_number == i]
 
                 weekly_stats.append({
                     "week_number": i,
                     "progress": float(prog_rec.completion_percentage) if prog_rec else 0,
-                    "duration": dur_1 + dur_2, # Toplam süre
+                    "duration": dur_1 + dur_2,
                     "duration_seconds": dur_1,
                     "duration_2": dur_2,
                     "score_1": att_1.score if att_1 else 0,
@@ -438,14 +443,10 @@ class StudentAnalyticsView(APIView):
                     "correct_2": att_2.correct_answers if att_2 else 0,
                     "wrong_2": att_2.wrong_answers if att_2 else 0,
                     "questions": week_qs,
-                    # Quiz detaylarını modal için ekliyoruz
-                    "quiz_results": [] # Eğer detaylı şık analizi lazımsa buraya eklenebilir
+                    "quiz_results": [] 
                 })
 
-            # Genel İlerleme Ortalaması
             overall_progress = sum(w['progress'] for w in weekly_stats) / 14 if weekly_stats else 0
-            
-            # Toplam Süre Formatı
             total_sec = sum(t.duration_seconds for t in s_times)
             total_time_str = f"{total_sec // 60} dk" if total_sec < 3600 else f"{total_sec // 3600} sa {(total_sec % 3600) // 60} dk"
 
@@ -467,6 +468,7 @@ class StudentAnalyticsView(APIView):
                 } if s_pre_test else None
             })
 
+        # Eğer öğrenciyse tek bir objeyi liste içinde döner, hoca ise tüm listeyi döner.
         return Response(final_data, status=status.HTTP_200_OK)
 
 # --- YAPAY ZEKA SOHBET ---
