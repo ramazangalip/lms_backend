@@ -19,7 +19,7 @@ class QuizQuestionSerializer(serializers.ModelSerializer):
     options = QuizOptionSerializer(many=True)
     class Meta:
         model = QuizQuestion
-        fields = ['id', 'question_text', 'order', 'options']
+        fields = ['id', 'question_text', 'order', 'options','explanation']
 
 class QuizSerializer(serializers.ModelSerializer):
     id = serializers.CharField(read_only=True) 
@@ -379,7 +379,8 @@ class StudentAnalyticsSerializer(serializers.ModelSerializer):
                         "question_text": ans.question.question_text,
                         "selected_option": ans.selected_option.option_text,
                         "correct_option": correct_opt.option_text if correct_opt else "Belirtilmemiş",
-                        "is_correct": ans.is_correct
+                        "is_correct": ans.is_correct,
+                        "explanation": ans.question.explanation if ans.question.explanation else "Bu soru için özel bir analiz bulunmamaktadır."
                     })
 
             breakdown.append({

@@ -140,6 +140,13 @@ class QuizQuestion(models.Model):
     quiz = models.ForeignKey(Quiz, on_delete=models.CASCADE, related_name='questions')
     question_text = models.TextField()
     order = models.PositiveIntegerField(default=0)
+    # --- YENİ ALAN: HAZIR ANALİZ ---
+    explanation = models.TextField(
+        null=True, 
+        blank=True, 
+        verbose_name="Soru Analizi / Açıklaması",
+        help_text="Öğrenci bu soruyu yanlış yaptığında gösterilecek hazır yapay zeka veya hoca analizi."
+    )
 
     class Meta:
         ordering = ['order']

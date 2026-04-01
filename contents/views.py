@@ -403,12 +403,26 @@ class StudentAnalyticsView(APIView):
 
         student_ids = list(students.values_list('id', flat=True))
 
-        # 3. TOPLU VERİ ÇEKME (Aynı hızda devam)
+        # 3. TOPLU VERİ ÇEKME (N+1 problemini önlemek için optimize edildi)
         all_time_tracking = list(TimeTracking.objects.filter(student_id__in=student_ids).select_related('weekly_content'))
+        
+        # Quiz denemelerini ve cevapları topluca çekiyoruz
         all_attempts = list(StudentQuizAttempt.objects.filter(student_id__in=student_ids).select_related('quiz__material__parent_content'))
+        
+        # KRİTİK: Tüm cevapları ve ilgili soruların analizlerini (explanation) tek seferde çekiyoruz
+        all_answers = list(StudentAnswer.objects.filter(
+            attempt__student_id__in=student_ids
+        ).select_related('question', 'selected_option', 'attempt'))
+
         all_progress = list(StudentProgress.objects.filter(student_id__in=student_ids).select_related('weekly_content'))
         all_pre_tests = {pt.student_id: pt for pt in PreTestResult.objects.filter(student_id__in=student_ids)}
         all_questions = list(StudentQuestion.objects.filter(student_id__in=student_ids).select_related('weekly_content'))
+        
+        # Doğru seçenekleri belleğe al (Sorgu yükünü azaltmak için)
+        all_correct_options = {
+            opt.question_id: opt.option_text 
+            for opt in QuizOption.objects.filter(is_correct=True)
+        }
 
         # 4. VERİLERİ HARİTALAMA
         final_data = []
@@ -430,6 +444,24 @@ class StudentAnalyticsView(APIView):
                 prog_rec = next((p for p in s_progress if p.weekly_content and p.weekly_content.week_number == i), None)
                 week_qs = [q.question_text for q in s_questions if q.weekly_content and q.weekly_content.week_number == i]
 
+                # --- QUIZ SONUÇ ANALİZİ (GÜNCELLENEN KISIM) ---
+                quiz_results = []
+                # En son yapılan denemeyi baz al (Tur 2 varsa onu, yoksa Tur 1'i getir)
+                last_attempt = att_2 if att_2 else att_1
+                
+                if last_attempt:
+                    # Bellekteki cevaplar içinden bu denemeye ait olanları süz
+                    s_answers = [ans for ans in all_answers if ans.attempt_id == last_attempt.id]
+                    for ans in s_answers:
+                        quiz_results.append({
+                            "question_text": ans.question.question_text,
+                            "selected_option": ans.selected_option.option_text,
+                            "correct_option": all_correct_options.get(ans.question_id, "Belirtilmemiş"),
+                            "is_correct": ans.is_correct,
+                            # Veritabanındaki hazır analizi buraya ekliyoruz
+                            "explanation": ans.question.explanation if ans.question.explanation else "Bu soru için analiz hazırlanmamış."
+                        })
+
                 weekly_stats.append({
                     "week_number": i,
                     "progress": float(prog_rec.completion_percentage) if prog_rec else 0,
@@ -443,7 +475,7 @@ class StudentAnalyticsView(APIView):
                     "correct_2": att_2.correct_answers if att_2 else 0,
                     "wrong_2": att_2.wrong_answers if att_2 else 0,
                     "questions": week_qs,
-                    "quiz_results": [] 
+                    "quiz_results": quiz_results  # Artık içi dolu ve analizli
                 })
 
             overall_progress = sum(w['progress'] for w in weekly_stats) / 14 if weekly_stats else 0
@@ -468,7 +500,6 @@ class StudentAnalyticsView(APIView):
                 } if s_pre_test else None
             })
 
-        # Eğer öğrenciyse tek bir objeyi liste içinde döner, hoca ise tüm listeyi döner.
         return Response(final_data, status=status.HTTP_200_OK)
 
 # --- YAPAY ZEKA SOHBET ---
@@ -626,49 +657,49 @@ class QuizAIAnalysisView(APIView):
 
     def get(self, request, attempt_id):
         try:
-            # 1. Sınav denemesini ve ilgili öğrenciyi bul
+            # 1. Sınav denemesini bul
             attempt = get_object_or_404(StudentQuizAttempt, id=attempt_id, student=request.user)
             
             # 2. Haftalık içerik ve ilerleme kaydına ulaş
             weekly_content = attempt.quiz.material.parent_content
             progress = StudentProgress.objects.get(student=request.user, weekly_content=weekly_content)
             
-            # --- KRİTİK 2. TUR TETİKLEME MANTIĞI ---
-            # Eğer öğrencinin en az 1 yanlışı varsa ve hala 1. turdaysa Round 2'ye geçir
+            # --- 2. TUR TETİKLEME MANTIĞI (Aynı kalıyor) ---
             if attempt.wrong_answers > 0 and progress.current_attempt_round == 1:
                 progress.current_attempt_round = 2
-                progress.completion_percentage = 0  # 2. turda materyalleri tekrar izlemesi için sıfırla
+                progress.completion_percentage = 0  
                 progress.save()
-            # ---------------------------------------
 
-            # 3. AI için hata detaylarını hazırla
-            wrong_answers = StudentAnswer.objects.filter(attempt=attempt, is_correct=False).select_related('question')
+            # 3. VERİTABANINDAN HAZIR ANALİZLERİ TOPLA
+            # Öğrencinin yanlış cevapladığı soruları çekiyoruz
+            wrong_answers = StudentAnswer.objects.filter(
+                attempt=attempt, 
+                is_correct=False
+            ).select_related('question')
+
+            combined_analysis = ""
             user_name = request.user.first_name if request.user.first_name else request.user.username
             
-            details = ""
-            for ans in wrong_answers:
-                correct_opt = QuizOption.objects.filter(question=ans.question, is_correct=True).first()
-                details += f"Soru: {ans.question.question_text}\nHata: {ans.selected_option.option_text}\nDoğru: {correct_opt.option_text if correct_opt else '?'}\n\n"
+            combined_analysis += f"Merhaba {user_name}, bu testteki performansını senin için analiz ettim:\n\n"
 
-            prompt = (
-                f"Bir eğitim danışmanı olarak, öğrencim {user_name} için '{attempt.quiz.title}' sınavındaki "
-                f"%{attempt.score} başarısını analiz et. Hataları:\n{details}\n"
-                f"Lütfen mesaja direkt '{user_name}, merhaba!' veya 'Selam {user_name}!' gibi samimi bir girişle başla. "
-                f"Hatalarını nazikçe açıkla, moral ver ve gelişim için ne yapması gerektiğini söyle."
-            )
-            
-            # 4. Vertex AI üzerinden analizi üret
-            p_id, loc = init_vertex_ai()
-            model = GenerativeModel(f"projects/{p_id}/locations/{loc}/endpoints/981343814604029952")
-            response = model.generate_content(prompt)
-            
+            for ans in wrong_answers:
+                # Soru bazlı hazır açıklamayı (explanation) çekiyoruz
+                q_text = ans.question.question_text
+                # Eğer explanation boşsa bir fallback metni koyuyoruz
+                q_analysis = ans.question.explanation if ans.question.explanation else "Bu konuyla ilgili ders notlarını tekrar gözden geçirmelisin."
+                
+                combined_analysis += f"• SORU: {q_text}\n"
+                combined_analysis += f"• ANALİZ: {q_analysis}\n\n"
+
+            combined_analysis += "\nŞimdi 2. tura geçerek bu eksiklerini tamamlayabilirsin. Başarılar!"
+
             return Response({
-                "ai_feedback": response.text,
-                "current_round": progress.current_attempt_round # Frontend'e yeni tur bilgisini dön
+                "ai_feedback": combined_analysis, # İsim aynı kalsın ki frontend kırılmasın
+                "current_round": progress.current_attempt_round
             }, status=200)
             
         except Exception as e: 
-            return Response({"error": "Analiz başarısız."}, status=500)
+            return Response({"error": "Analiz verisi alınamadı."}, status=500)
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
