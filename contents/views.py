@@ -24,13 +24,14 @@ import json
 # --- YARDIMCI FONKSİYONLAR ---
 
 def is_pre_requirements_met(user):
-        if user.is_staff or getattr(user, 'is_teacher', False):
-            return True
-        
-        video_watched = IntroVideoCompletion.objects.filter(student=user, is_watched=True).exists()
-        pre_test_done = PreTestResult.objects.filter(student=user, is_completed=True).exists()
-        
-        return video_watched and pre_test_done
+    """Öğrencinin sistem kilitlerini (Tanıtım ve Ön Test) açıp açmadığını kontrol eder."""
+    if user.is_staff or getattr(user, 'is_teacher', False):
+        return True
+    
+    video_watched = IntroVideoCompletion.objects.filter(student=user, is_watched=True).exists()
+    pre_test_done = PreTestResult.objects.filter(student=user, is_completed=True).exists()
+    
+    return video_watched and pre_test_done
 
 def init_vertex_ai():
     """Vertex AI bağlantısını merkezi olarak yönetir."""
@@ -48,107 +49,85 @@ def init_vertex_ai():
 
 # --- ANA İÇERİK VIEW ---
 
+from django.db import transaction
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+from rest_framework import status
+import traceback
+
 class WeeklyContentView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         week_number = request.query_params.get('week_number')
         user = request.user
-        is_teacher_or_staff = user.is_staff or getattr(user, 'is_teacher', False)
-
-        # 1. HAFTALIK LİSTE GÖRÜNÜMÜ (Sidebar ve Dashboard için optimize edilmiş)
+        
         if not week_number:
-            # prefetch_related ile veritabanı sorgu sayısını minimize ediyoruz (Performans için kritik)
-            contents = WeeklyContent.objects.all().order_by('week_number').prefetch_related('materials')
+            # Liste görünümü
+            contents = WeeklyContent.objects.all().order_by('week_number').prefetch_related('materials', 'flashcards')
             serializer = WeeklyContentSerializer(contents, many=True, context={'request': request})
             return Response(serializer.data, status=status.HTTP_200_OK)
 
-        # 2. ÖZEL HAFTA DETAY GÖRÜNÜMÜ
+        # Detay görünümü
         content = WeeklyContent.objects.filter(week_number=week_number).first()
         if not content:
             return Response({"detail": "Bu hafta bulunamadı."}, status=status.HTTP_404_NOT_FOUND)
 
-        # --- KİLİT KONTROLÜ (Hafta 1 dışındakiler için) ---
-        if not is_teacher_or_staff and int(week_number) >= 1:
-            if not is_pre_requirements_met(user):
-                return Response(
-                    {"error": "İçerikleri açmak için Tanıtım Videosunu izlemeli ve Ön Testi bitirmelisiniz."}, 
-                    status=status.HTTP_403_FORBIDDEN
-                )
-
-        # Serializer'dan veriyi al
         serializer = WeeklyContentSerializer(content, context={'request': request})
         data = serializer.data
 
-        # --- PERFORMANS VE ENTEGRASYON: 1. HAFTADA TÜM VERİLERİ BİRLEŞTİR ---
-        # Ayrı API isteklerini (pre-test/status vb.) ortadan kaldırmak için buraya ekliyoruz
+        # --- DÜZELTME: Ön Test Sorularını Zorunlu Olarak Çek ---
         if str(week_number) == "1":
-            # 1. haftayı çekiyoruz (intro bilgileri için referans)
-            week_one = content # Zaten 1. haftadayız
+            from .models import PreTestQuestion
+            from .serializers import PreTestQuestionSerializer
             
-            # Intro bilgilerini ekle
-            data['intro_video_url'] = week_one.intro_video_url
-            data['intro_title'] = week_one.intro_title
-            data['intro_description'] = week_one.intro_description
-
-            # Ön Test Sorularını ekle
             questions = PreTestQuestion.objects.all().prefetch_related('options')
-            data['pre_test_questions'] = PreTestQuestionSerializer(questions, many=True).data
-
-            # Öğrencinin Ön Test Sonucunu ekle
-            pre_res = PreTestResult.objects.filter(student=user).first()
-            data['pre_test_data'] = {
-                "is_completed": pre_res.is_completed if pre_res else False,
-                "score": int(pre_res.score) if pre_res else 0,
-                "correct": pre_res.correct_answers if pre_res else 0,
-                "wrong": pre_res.wrong_answers if pre_res else 0
-            }
+            if questions.exists():
+                data['pre_test_questions'] = PreTestQuestionSerializer(questions, many=True).data
+            else:
+                data['pre_test_questions'] = [] # Null yerine boş liste dönmek güvenlidir
 
         return Response(data, status=status.HTTP_200_OK)
 
     def post(self, request):
-        """Hocanın içerik eklediği/güncellediği kısım"""
-        if not getattr(request.user, 'is_teacher', False):
+        """Hocanın içerik güncellediği kısım"""
+        if not getattr(request.user, 'is_teacher', False) and not request.user.is_staff:
             return Response({"error": "Yetkiniz bulunmamaktadır."}, status=status.HTTP_403_FORBIDDEN)
 
         week_number = request.data.get('week_number')
-        intro_url = request.data.get('intro_video_url')
-        intro_title = request.data.get('intro_title')
-        intro_desc = request.data.get('intro_description')
-        pre_test_questions = request.data.get('pre_test_questions', [])
+        if not week_number:
+            return Response({"error": "Hafta numarası belirtilmelidir."}, status=status.HTTP_400_BAD_REQUEST)
 
-        serializer = WeeklyContentSerializer(data=request.data, context={'request': request})
-        if serializer.is_valid():
-            content_instance = serializer.save()
-            
-            # Sadece Hafta 1 güncellenirken Ön Test ve Intro alanlarını işle
-            if str(week_number) == "1":
-                # Intro Güncelleme
-                WeeklyContent.objects.filter(week_number=1).update(
-                    intro_video_url=intro_url,
-                    intro_title=intro_title if intro_title else "Genel Tanıtım",
-                    intro_description=intro_desc
+        try:
+            # İşlemleri atomik yapıyoruz
+            with transaction.atomic():
+                content_instance = WeeklyContent.objects.filter(week_number=week_number).first()
+
+                # Kayıt mantığı tamamen Serializer.create/update içinde. 
+                # View içinde ekstra PreTestQuestion.objects.create yapmıyoruz!
+                serializer = WeeklyContentSerializer(
+                    content_instance, 
+                    data=request.data, 
+                    context={'request': request}, 
+                    partial=True
                 )
 
-                # Ön Test Sorularını Güncelle (Atomik)
-                if pre_test_questions:
-                    PreTestQuestion.objects.all().delete()
-                    for idx, q_data in enumerate(pre_test_questions):
-                        if q_data.get('question_text'):
-                            question_obj = PreTestQuestion.objects.create(
-                                question_text=q_data['question_text'],
-                                order=idx
-                            )
-                            for opt in q_data.get('options', []):
-                                if opt.get('option_text'):
-                                    PreTestOption.objects.create(
-                                        question=question_obj,
-                                        option_text=opt['option_text'],
-                                        is_correct=opt.get('is_correct', False)
-                                    )
-            
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                if serializer.is_valid():
+                    serializer.save()
+                    return Response(serializer.data, status=status.HTTP_201_CREATED)
+                
+                # Eğer 400 hatası alırsan terminalde hangi alanın hatalı olduğunu göreceğiz
+                print(f"Validation Errors: {serializer.errors}")
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        except Exception as e:
+            print("--- HAFTA KAYDETME HATASI ---")
+            traceback.print_exc()
+            return Response(
+                {"error": f"Sunucu hatası: {str(e)}"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 class CompleteIntroVideoView(APIView):
     """Öğrenci genel tanıtım videosunu bitirdiğinde tüm haftaların kilidi açılır."""

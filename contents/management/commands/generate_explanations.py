@@ -44,12 +44,14 @@ class Command(BaseCommand):
             options_text = "\n".join([f"- {opt.option_text} ({'DOĞRU' if opt.is_correct else 'YANLIŞ'})" for opt in question.options.all()])
             
             prompt = (
-                f"Soru: {question.question_text}\n"
-                f"Şıklar:\n{options_text}\n\n"
-                "Görev: Bu soruyu yanlış yapan bir öğrenciye neden yanlış yapmış olabileceğini ve "
-                "doğru cevabın mantığını anlatan, 2-3 cümlelik samimi ve öğretici bir analiz yaz. "
-                "Cevaba 'Soru Analizi:' gibi başlıklar atma, direkt açıklamaya gir."
-            )
+    f"Soru: {question.question_text}\n"
+    f"Şıklar:\n{options_text}\n\n"
+    "GÖREV: Sen bir Excel uzmanı ve samimi bir öğretmensin. "
+    "Öğrenci bu soruyu yanlış yaptı. Ona 'ders notuna bak' gibi geçiştirici cümleler kurma! "
+    "Bunun yerine; doğru şıkkın neden doğru olduğunu ve yanlış şıklardaki mantık hatasını "
+    "maksimum 3 cümlede, 'Hadi gel bakalım,' veya 'Aslında buradaki püf noktası şu:' gibi "
+    "öğrenciyi motive eden bir dille açıkla."
+)
 
             try:
                 response = model.generate_content(prompt)
