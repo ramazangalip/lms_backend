@@ -29,7 +29,7 @@ urlpatterns = [
     path('quiz/<int:quiz_id>/last-attempt/', QuizLastAttemptView.as_view(), name='quiz-last-attempt'),
     path('weeks/complete-intro/', CompleteIntroVideoView.as_view(), name='complete-intro'),
     path('bulk-academic-report/', BulkAcademicReportView.as_view(), name='bulk-report'),
-    
+    path('chatbot-analytics/', ChatbotAnalyticsView.as_view(), name='chatbot-analytics'),
     
 
 ]

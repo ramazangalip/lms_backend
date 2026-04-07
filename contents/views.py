@@ -868,3 +868,50 @@ class PreTestStatusView(APIView):
             "questions": questions_serializer.data,
             "result": result_data
         }, status=status.HTTP_200_OK)
+
+User = get_user_model()
+
+class ChatbotAnalyticsView(APIView):
+    """
+    Akademisyen Paneli için Chatbot kullanım raporu sağlar.
+    """
+    permission_classes = [IsAuthenticated, IsAdminUser]
+
+    def get(self, request):
+        dept = request.query_params.get('department')
+        if not dept or dept == 'all':
+            return Response({"error": "Bölüm seçimi zorunludur."}, status=400)
+
+        # 1. Bölümdeki öğrencileri getir
+        students = User.objects.filter(
+            department=dept, 
+            is_staff=False, 
+            is_teacher=False
+        ).order_by('first_name')
+        
+        student_ids = list(students.values_list('id', flat=True))
+
+        # 2. Tüm soruları tek seferde, haftalık içerik bilgisiyle çek
+        all_questions = list(StudentQuestion.objects.filter(
+            student_id__in=student_ids
+        ).select_related('weekly_content').order_by('-created_at'))
+
+        report_data = []
+
+        for student in students:
+            # Bellek içi filtreleme (Veritabanına tekrar gitmez)
+            s_questions = [q for q in all_questions if q.student_id == student.id]
+            
+            report_data.append({
+                "student_name": f"{student.first_name} {student.last_name}".upper(),
+                "total_count": len(s_questions),
+                "questions": [
+                    {
+                        "text": q.question_text,
+                        "week": q.weekly_content.week_number if q.weekly_content else "Genel",
+                        "date": q.created_at.strftime('%d.%m.%Y %H:%M')
+                    } for q in s_questions
+                ]
+            })
+
+        return Response(report_data, status=200)
