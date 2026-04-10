@@ -30,6 +30,6 @@ urlpatterns = [
     path('weeks/complete-intro/', CompleteIntroVideoView.as_view(), name='complete-intro'),
     path('bulk-academic-report/', BulkAcademicReportView.as_view(), name='bulk-report'),
     path('chatbot-analytics/', ChatbotAnalyticsView.as_view(), name='chatbot-analytics'),
-    
+    path('week/<int:week_number>/submit-entry-test/', WeeklyPreTestSubmitView.as_view(), name='weekly-entry-test-submit'),
 
 ]

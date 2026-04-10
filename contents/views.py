@@ -63,35 +63,59 @@ class WeeklyContentView(APIView):
         week_number = request.query_params.get('week_number')
         user = request.user
         
+        # 1. LİSTE GÖRÜNÜMÜ (Tüm haftaların genel bilgisi)
         if not week_number:
-            # Liste görünümü
             contents = WeeklyContent.objects.all().order_by('week_number').prefetch_related('materials', 'flashcards')
             serializer = WeeklyContentSerializer(contents, many=True, context={'request': request})
             return Response(serializer.data, status=status.HTTP_200_OK)
 
-        # Detay görünümü
+        # 2. DETAY GÖRÜNÜMÜ (Spesifik bir hafta içeriği)
         content = WeeklyContent.objects.filter(week_number=week_number).first()
         if not content:
             return Response({"detail": "Bu hafta bulunamadı."}, status=status.HTTP_404_NOT_FOUND)
 
+        # Serializer'ı hazırla
         serializer = WeeklyContentSerializer(content, context={'request': request})
         data = serializer.data
 
-        # --- DÜZELTME: Ön Test Sorularını Zorunlu Olarak Çek ---
+        # --- HAFTA 1 ÖZEL: SİSTEM GİRİŞ ÖN TESTİ ---
         if str(week_number) == "1":
             from .models import PreTestQuestion
             from .serializers import PreTestQuestionSerializer
             
             questions = PreTestQuestion.objects.all().prefetch_related('options')
-            if questions.exists():
-                data['pre_test_questions'] = PreTestQuestionSerializer(questions, many=True).data
+            data['pre_test_questions'] = PreTestQuestionSerializer(questions, many=True).data if questions.exists() else []
+
+        # --- ÖĞRENCİ İÇİN GİRİŞ TESTİ (ENTRY TEST) KONTROLÜ VE MATERYAL GİZLEME ---
+        is_teacher = getattr(user, 'is_teacher', False) or user.is_staff
+        
+        if not is_teacher:
+            # 1. Hafta hariç diğer haftalarda giriş testi kontrolü yap
+            if int(week_number) > 1:
+                from .models import WeeklyPreTestResult
+                
+                # Öğrenci bu haftanın giriş testini tamamladı mı?
+                is_passed = WeeklyPreTestResult.objects.filter(
+                    student=user, 
+                    week=content, 
+                    is_completed=True
+                ).exists()
+                
+                if not is_passed:
+                    # Test geçilmemişse: Materyalleri ve Kaynakları veriden temizle
+                    data['materials'] = []
+                    data['flashcards'] = []
+                    data['is_entry_test_required'] = True # Frontend'e uyarı gönder
+                else:
+                    data['is_entry_test_required'] = False
             else:
-                data['pre_test_questions'] = [] # Null yerine boş liste dönmek güvenlidir
+                # 1. Hafta için giriş testi zorunluluğu yok (Sadece PreTest var)
+                data['is_entry_test_required'] = False
 
         return Response(data, status=status.HTTP_200_OK)
 
     def post(self, request):
-        """Hocanın içerik güncellediği kısım"""
+        """Akademisyen Paneli: İçerik Güncelleme ve Soru Ekleme"""
         if not getattr(request.user, 'is_teacher', False) and not request.user.is_staff:
             return Response({"error": "Yetkiniz bulunmamaktadır."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -100,12 +124,10 @@ class WeeklyContentView(APIView):
             return Response({"error": "Hafta numarası belirtilmelidir."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            # İşlemleri atomik yapıyoruz
             with transaction.atomic():
                 content_instance = WeeklyContent.objects.filter(week_number=week_number).first()
 
-                # Kayıt mantığı tamamen Serializer.create/update içinde. 
-                # View içinde ekstra PreTestQuestion.objects.create yapmıyoruz!
+                # Kayıt mantığı tamamen Serializer.create/update içinde (entry_questions dahil)
                 serializer = WeeklyContentSerializer(
                     content_instance, 
                     data=request.data, 
@@ -117,7 +139,7 @@ class WeeklyContentView(APIView):
                     serializer.save()
                     return Response(serializer.data, status=status.HTTP_201_CREATED)
                 
-                # Eğer 400 hatası alırsan terminalde hangi alanın hatalı olduğunu göreceğiz
+                # Hata durumunda loglama
                 print(f"Validation Errors: {serializer.errors}")
                 return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -147,8 +169,10 @@ class ContentDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, week_number):
-        # Kilit Kontrolü
-        if int(week_number) > 1 and not is_pre_requirements_met(request.user):
+        user = request.user
+        
+        # 1. TEMEL KİLİT KONTROLÜ (Tanıtım ve Ön Test)
+        if int(week_number) > 1 and not is_pre_requirements_met(user):
              return Response(
                 {"error": "Haftalık içeriklere erişebilmek için Tanıtım Videosunu izlemeli ve Ön Testi tamamlamalısınız."}, 
                 status=status.HTTP_403_FORBIDDEN
@@ -157,8 +181,38 @@ class ContentDetailView(APIView):
         content = WeeklyContent.objects.filter(week_number=week_number).first()
         if not content:
             return Response({"error": f"{week_number}. hafta içeriği bulunamadı."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Serializer'ı hazırla
         serializer = WeeklyContentSerializer(content, context={'request': request})
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        data = serializer.data
+
+        # --- YENİ SİSTEM: HAFTALIK GİRİŞ TESTİ ZORUNLULUĞU ---
+        is_teacher = getattr(user, 'is_teacher', False) or user.is_staff
+        
+        if not is_teacher:
+            # 1. haftadan sonraki haftalar için giriş testi kontrolü
+            if int(week_number) > 1:
+                from .models import WeeklyPreTestResult
+                
+                # Öğrenci bu haftanın giriş kapısını (testini) açtı mı?
+                is_passed = WeeklyPreTestResult.objects.filter(
+                    student=user, 
+                    week=content, 
+                    is_completed=True
+                ).exists()
+                
+                if not is_passed:
+                    # GÜVENLİK: Test geçilmemişse materyalleri siliyoruz
+                    data['materials'] = []
+                    data['flashcards'] = []
+                    data['is_entry_test_required'] = True
+                else:
+                    data['is_entry_test_required'] = False
+            else:
+                # 1. hafta için zaten Ön Test (PreTest) var, bu yüzden ekstra giriş testi zorunlu değil
+                data['is_entry_test_required'] = False
+
+        return Response(data, status=status.HTTP_200_OK)
 
 # --- TAKİP VE İLERLEME SİSTEMİ ---
 
@@ -915,3 +969,81 @@ class ChatbotAnalyticsView(APIView):
             })
 
         return Response(report_data, status=200)
+
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from datetime import timedelta
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+from .models import WeeklyContent, TemporaryUnlock, WeeklyPreTestResult
+
+class WeeklyPreTestSubmitView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, week_number):
+        # 1. Haftalık içeriği ve soruları al
+        content = get_object_or_404(WeeklyContent, week_number=week_number)
+        questions = content.entry_questions.all().prefetch_related('options')
+        answers = request.data.get('answers', []) # [{'question_id': X, 'option_id': Y}, ...]
+        
+        wrong_target_weeks = set() 
+        correct_count = 0
+        wrong_count = 0
+
+        # 2. Cevapları kontrol et
+        for q in questions:
+            # Öğrencinin bu soruya verdiği cevabı bul (Frontend'den gelen yapıya göre kontrol)
+            # Eğer frontend'den direkt {q_id: opt_id} geliyorsa burayı ona göre revize edebilirsin
+            user_answer = next((a for a in answers if str(a.get('question_id')) == str(q.id)), None)
+            
+            is_correct = False
+            if user_answer:
+                # Seçilen opsiyonun doğruluğunu kontrol et
+                selected_opt_exists = q.options.filter(id=user_answer.get('option_id'), is_correct=True).exists()
+                if selected_opt_exists:
+                    is_correct = True
+                    correct_count += 1
+                else:
+                    wrong_count += 1
+            else:
+                # Hiç cevap verilmemişse yanlış sayılır
+                wrong_count += 1
+            
+            # 3. Eğer yanlışsa, bu sorunun hedeflediği haftayı "açılacaklar" listesine ekle
+            if not is_correct:
+                if q.target_week:
+                    wrong_target_weeks.add(q.target_week)
+
+        # 4. Yanlış yapılan haftalar için 2 günlük kilit açma kaydı oluştur
+        unlock_duration = timezone.now() + timedelta(days=2)
+        for target_week in wrong_target_weeks:
+            TemporaryUnlock.objects.update_or_create(
+                student=request.user,
+                week=target_week,
+                defaults={'unlock_until': unlock_duration}
+            )
+
+        # 5. TEST SONUÇLARINI KAYDET (Admin Panelini Dolduran Kısım Burası)
+        # Hangi haftaların açıldığını da JSON listesi olarak tutuyoruz
+        unlocked_week_numbers = [tw.week_number for tw in wrong_target_weeks]
+        
+        WeeklyPreTestResult.objects.update_or_create(
+            student=request.user,
+            week=content,
+            defaults={
+                'is_completed': True,
+                'correct_count': correct_count,
+                'wrong_count': wrong_count,
+                'unlocked_weeks_json': unlocked_week_numbers
+            }
+        )
+
+        # 6. Frontend Analiz Ekranı İçin Gerekli Verileri Dön
+        return Response({
+            "status": "success",
+            "message": "Test tamamlandı, haftalık içeriklere erişebilirsiniz.",
+            "correct_count": correct_count,
+            "wrong_count": wrong_count,
+            "unlocked_week_numbers": unlocked_week_numbers
+        }, status=200)

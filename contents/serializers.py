@@ -10,29 +10,37 @@ User = get_user_model()
 # --- ALT MODELLER ---
 
 class QuizOptionSerializer(serializers.ModelSerializer):
-    id = serializers.CharField(read_only=True) 
+    # ID'yi writable yapıyoruz
+    id = serializers.IntegerField(required=False)
     class Meta:
         model = QuizOption
         fields = ['id', 'option_text', 'is_correct']
 
 class QuizQuestionSerializer(serializers.ModelSerializer):
-    id = serializers.CharField(read_only=True)
+    # ID'yi writable yapıyoruz
+    id = serializers.IntegerField(required=False)
     options = QuizOptionSerializer(many=True)
     class Meta:
         model = QuizQuestion
-        fields = ['id', 'question_text', 'order', 'options','explanation']
+        fields = ['id', 'question_text', 'order', 'options', 'explanation']
 
 class QuizSerializer(serializers.ModelSerializer):
-    id = serializers.CharField(read_only=True) 
+    # ID'yi writable yapıyoruz
+    id = serializers.IntegerField(required=False)
     questions = QuizQuestionSerializer(many=True)
     class Meta:
         model = Quiz
         fields = ['id', 'title', 'description', 'questions']
 
 class MaterialSerializer(serializers.ModelSerializer):
-    id = serializers.CharField(read_only=True) 
+    # DİKKAT: read_only=True KISMINI SİLDİK
+    id = serializers.IntegerField(required=False) 
     quiz = QuizSerializer(required=False, allow_null=True)
     embed_url = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
+    class Meta:
+        model = Material
+        fields = ['id', 'content_type', 'title', 'embed_url', 'point_value', 'quiz']
     
     class Meta:
         model = Material
@@ -48,11 +56,16 @@ class FlashcardSerializer(serializers.ModelSerializer):
 # --- ANA SERIALIZER ---
 
 class PreTestOptionSerializer(serializers.ModelSerializer):
+    # ID'yi mutlaka IntegerField ve writable yapıyoruz
+    id = serializers.IntegerField(required=False) 
+
     class Meta:
         model = PreTestOption
         fields = ['id', 'option_text', 'is_correct']
 
 class PreTestQuestionSerializer(serializers.ModelSerializer):
+    # ID'yi mutlaka IntegerField ve writable yapıyoruz
+    id = serializers.IntegerField(required=False)
     options = PreTestOptionSerializer(many=True)
 
     class Meta:
@@ -68,6 +81,26 @@ from .models import (
 )
 # Diğer serializer'larının (MaterialSerializer vb.) yukarıda tanımlı olduğunu varsayıyoruz.
 
+
+class WeeklyPreTestOptionSerializer(serializers.ModelSerializer):
+    # ID'yi mutlaka IntegerField ve writable yapıyoruz
+    id = serializers.IntegerField(required=False)
+
+    class Meta:
+        model = WeeklyPreTestOption
+        fields = ['id', 'option_text', 'is_correct']
+
+class WeeklyPreTestQuestionSerializer(serializers.ModelSerializer):
+    # ID'yi mutlaka IntegerField ve writable yapıyoruz
+    id = serializers.IntegerField(required=False)
+    options = WeeklyPreTestOptionSerializer(many=True)
+    
+    # target_week zaten PrimaryKeyRelatedField olduğu için ID olarak gidip gelir, sorun çıkarmaz
+    target_week = serializers.PrimaryKeyRelatedField(queryset=WeeklyContent.objects.all())
+
+    class Meta:
+        model = WeeklyPreTestQuestion
+        fields = ['id', 'question_text', 'order', 'target_week', 'options']
 class WeeklyContentSerializer(serializers.ModelSerializer):
     id = serializers.CharField(read_only=True)
     
@@ -75,8 +108,12 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
     # Bu sayede hoca panelinden gelen 'materials' verisi 'create' metoduna ulaşabilir.
     materials = MaterialSerializer(many=True, required=False)
     flashcards = FlashcardSerializer(many=True, required=False)
+
     
+    is_entry_test_passed = serializers.SerializerMethodField()
+    is_entry_test_required = serializers.SerializerMethodField()
     pre_test_questions = PreTestQuestionSerializer(many=True, required=False, allow_null=True)
+    entry_questions = WeeklyPreTestQuestionSerializer(many=True, required=False)
     
     progress = serializers.SerializerMethodField()
     is_completed = serializers.SerializerMethodField()
@@ -92,8 +129,34 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
             'intro_title', 'intro_video_url', 'intro_description',
             'release_date', 'is_locked', 'lock_reason',
             'is_intro_watched', 'materials', 'flashcards', 
-            'progress', 'is_completed', 'pre_test_questions'
+            'progress', 'is_completed', 'pre_test_questions',
+            'entry_questions', 'is_entry_test_passed',
+            'is_entry_test_required'
         ]
+
+    # BU METODU EKLE
+    def get_is_entry_test_required(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user or not request.user.is_authenticated:
+            return False
+            
+        if getattr(request.user, 'is_teacher', False) or request.user.is_staff:
+            return False
+
+        if obj.week_number <= 1:
+            return False
+
+        from .models import WeeklyPreTestQuestion, WeeklyPreTestResult
+        # 1. Bu haftaya ait giriş sorusu var mı?
+        has_questions = WeeklyPreTestQuestion.objects.filter(appearing_week=obj).exists()
+        if not has_questions:
+            return False
+
+        # 2. Öğrenci bu haftanın testini zaten çözmüş mü?
+        passed = WeeklyPreTestResult.objects.filter(student=request.user, week=obj, is_completed=True).exists()
+        
+        # Eğer soru varsa VE çözülmediyse TRUE döner (Yani test istenir)
+        return not passed
 
     # --- ÖĞRENCİ İLERLEME VE KİLİT MANTIKLARI (GÜVENLİ) ---
 
@@ -115,23 +178,34 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
         return progress_obj.is_completed if progress_obj else False
 
     def get_is_locked(self, obj):
+        if obj.week_number == 1:
+            return False
+
         request = self.context.get('request')
-        # Hoca ve Staff için kilit her zaman False (Her şeyi görebilmeleri için)
         if not request or not request.user or not request.user.is_authenticated:
             return True
         if getattr(request.user, 'is_teacher', False) or request.user.is_staff:
             return False
 
+        # Geçici Kilit Kontrolü
+        try:
+            from .models import TemporaryUnlock
+            if TemporaryUnlock.objects.filter(student=request.user, week=obj, unlock_until__gt=timezone.now()).exists():
+                return False
+        except:
+            pass
+
         now = timezone.now()
         if obj.release_date and now < obj.release_date:
             return True
 
-        if obj.week_number > 1:
-            previous_week = WeeklyContent.objects.filter(week_number=obj.week_number - 1).first()
-            if previous_week:
-                prev_progress = StudentProgress.objects.filter(student=request.user, weekly_content=previous_week).first()
-                if not prev_progress or not prev_progress.is_completed:
-                    return True
+        # Önceki hafta kontrolü
+        previous_week = WeeklyContent.objects.filter(week_number=obj.week_number - 1).first()
+        if previous_week:
+            from .models import StudentProgress
+            prev_progress = StudentProgress.objects.filter(student=request.user, weekly_content=previous_week).first()
+            if not prev_progress or not prev_progress.is_completed:
+                return True
         return False
 
     def get_lock_reason(self, obj):
@@ -159,14 +233,79 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
             completion = IntroVideoCompletion.objects.filter(student=request.user).first()
             return completion.is_watched if completion else False
         return False
+    
+    def get_entry_questions(self, obj):
+        try:
+            # Soru modelini içeride import et (Circular import koruması)
+            from .models import WeeklyPreTestQuestion
+            qs = WeeklyPreTestQuestion.objects.filter(appearing_week=obj).select_related('target_week')
+            
+            output = []
+            for q in qs:
+                # target_week yoksa veya Hafta 1 ise hata vermemesi için koruma
+                t_week_num = 1
+                if q.target_week:
+                    t_week_num = q.target_week.week_number
+
+                output.append({
+                    "id": q.id,
+                    "question_text": q.question_text,
+                    "target_week": t_week_num,
+                    "options": [
+                        {
+                            "id": o.id, 
+                            "option_text": o.option_text, 
+                            "is_correct": o.is_correct
+                        } for o in q.options.all()
+                    ]
+                })
+            return output
+        except Exception as e:
+            print(f"DEBUG: Entry Questions Error -> {str(e)}")
+            return []
+    
+    def get_is_entry_test_passed(self, obj):
+        if obj.week_number <= 1:
+            return True
+            
+        request = self.context.get('request')
+        if not request or not request.user or not request.user.is_authenticated:
+            return True # Akademisyen paneli için True dönmek en güvenlisidir
+            
+        if getattr(request.user, 'is_teacher', False) or request.user.is_staff:
+            return True
+            
+        try:
+            from .models import WeeklyPreTestResult
+            return WeeklyPreTestResult.objects.filter(student=request.user, week=obj, is_completed=True).exists()
+        except:
+            return True
+        
+    
 
     # --- VERİ SİLİNMESİNİ ENGELLEYEN VE GÜNCELLEMEYİ SAĞLAYAN CREATE ---
 
 
+    # --- VERİ SİLİNMESİNİ ENGELLEYEN VE GÜNCELLEMEYİ SAĞLAYAN METODLAR ---
+
+    # --- VERİ BÜTÜNLÜĞÜNÜ KORUYAN GÜVENLİ KAYIT SİSTEMİ ---
+
     def create(self, validated_data):
+        return self.save_all_content(validated_data)
+
+    def update(self, instance, validated_data):
+        return self.save_all_content(validated_data)
+
+    def save_all_content(self, validated_data):
+        """
+        Tüm alt modelleri (Material, Quiz, Question, Flashcard, EntryTest) 
+        ID bazlı koruyarak günceller.
+        """
         mats_data = validated_data.pop('materials', None)
         cards_data = validated_data.pop('flashcards', None)
         pre_test_data = validated_data.pop('pre_test_questions', None)
+        entry_questions_data = validated_data.pop('entry_questions', None)
+        
         w_num = validated_data.get('week_number')
 
         try:
@@ -184,145 +323,93 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
                     }
                 )
 
-                # 2. ÖN TEST (VERİ KORUMA GÜNCELLEMESİ)
-                if str(w_num) == "1" and pre_test_data is not None:
-                    valid_questions = [q for q in pre_test_data if q.get('question_text')]
-                    if valid_questions:
-                        # .delete() yerine update_or_create kullanarak PreTestResult'ları koruyoruz
-                        keep_pre_q_ids = []
-                        for q_idx, q_item in enumerate(valid_questions):
-                            pre_q_id = q_item.get('id')
-                            opts_list = q_item.pop('options', [])
-                            
-                            pre_q_obj, _ = PreTestQuestion.objects.update_or_create(
-                                id=pre_q_id if pre_q_id else None,
-                                defaults={
-                                    'question_text': q_item.get('question_text'),
-                                    'order': q_idx
-                                }
-                            )
-                            keep_pre_q_ids.append(pre_q_obj.id)
-
-                            for o_item in opts_list:
-                                if o_item.get('option_text'):
-                                    o_id = o_item.get('id')
-                                    PreTestOption.objects.update_or_create(
-                                        question=pre_q_obj,
-                                        id=o_id if o_id else None,
-                                        defaults={
-                                            'option_text': o_item.get('option_text'),
-                                            'is_correct': o_item.get('is_correct', False)
-                                        }
-                                    )
-                        
-                        # Artık listede olmayan soruları sil (Opsiyonel, veriyi korumak için dikkatli olunmalı)
-                        if keep_pre_q_ids:
-                            PreTestQuestion.objects.exclude(id__in=keep_pre_q_ids).delete()
-
-                # 3. MATERYALLER (TAM KORUMA)
+                # 2. MATERYALLER (ID Koruma & CASCADE Önleme)
                 if mats_data is not None:
-                    keep_mat_ids = []
-                    valid_mats = [m for m in mats_data if m.get('title')]
-                    
-                    for m_item in valid_mats:
-                        q_data = m_item.pop('quiz', None)
-                        m_id = m_item.get('id')
+                    if len(mats_data) > 0:
+                        keep_mat_ids = []
+                        for m_item in mats_data:
+                            if not m_item.get('title'): continue
+                            q_data = m_item.pop('quiz', None)
+                            m_id = m_item.get('id')
 
-                        try: m_id_int = int(m_id) if m_id else None
-                        except (ValueError, TypeError): m_id_int = None
-
-                        mat_obj = Material.objects.filter(id=m_id_int).first() if m_id_int else None
-
-                        if mat_obj:
-                            for attr, value in m_item.items():
-                                if attr != 'id': setattr(mat_obj, attr, value)
-                            mat_obj.save()
-                        else:
-                            mat_obj = Material.objects.create(parent_content=content, **m_item)
-                        
-                        keep_mat_ids.append(mat_obj.id)
-
-                        # QUIZ VE DENEME KORUMASI
-                        if mat_obj.content_type == 'form' and q_data:
-                            quiz_instance, _ = Quiz.objects.update_or_create(
-                                material=mat_obj,
-                                defaults={
-                                    'title': q_data.get('title', 'Haftalık Test'),
-                                    'description': q_data.get('description', '')
-                                }
-                            )
-
-                            questions_list = q_data.pop('questions', [])
-                            keep_q_ids = []
-                            for idx, q_val in enumerate(questions_list):
-                                if not q_val.get('question_text'): continue
-                                
-                                opts_list = q_val.pop('options', [])
-                                q_id = q_val.get('id')
-                                try: q_id_int = int(q_id) if q_id else None
-                                except: q_id_int = None
-                                
-                                question_instance, _ = QuizQuestion.objects.update_or_create(
-                                    quiz=quiz_instance,
-                                    id=q_id_int if q_id_int else None,
-                                    defaults={
-                                        'question_text': q_val.get('question_text'),
-                                        'order': idx,
-                                        'explanation': q_val.get('explanation', '')
-                                    }
-                                )
-                                keep_q_ids.append(question_instance.id)
-
-                                for o_val in opts_list:
-                                    if o_val.get('option_text'):
-                                        o_id = o_val.get('id')
-                                        try: o_id_int = int(o_id) if o_id else None
-                                        except: o_id_int = None
-                                        o_val.pop('id', None) 
-                                        
-                                        QuizOption.objects.update_or_create(
-                                            question=question_instance,
-                                            id=o_id_int if o_id_int else None,
-                                            defaults=o_val
-                                        )
+                            if m_id:
+                                # Physical Update: CASCADE silinmesini engeller
+                                Material.objects.filter(id=m_id).update(**m_item)
+                                mat_obj = Material.objects.get(id=m_id)
+                            else:
+                                mat_obj = Material.objects.create(parent_content=content, **m_item)
                             
-                            if keep_q_ids:
-                                quiz_instance.questions.exclude(id__in=keep_q_ids).delete()
+                            keep_mat_ids.append(mat_obj.id)
 
-                    if keep_mat_ids:
-                        content.materials.exclude(id__in=keep_mat_ids).delete()
+                            # SINAV (QUIZ) MANTIĞI
+                            if mat_obj.content_type == 'form' and q_data:
+                                quiz_instance, _ = Quiz.objects.update_or_create(
+                                    material=mat_obj,
+                                    defaults={'title': q_data.get('title', 'Haftalık Test'), 'description': q_data.get('description', '')}
+                                )
+                                q_list = q_data.pop('questions', [])
+                                keep_q_ids = []
+                                for idx, q_val in enumerate(q_list):
+                                    if not q_val.get('question_text'): continue
+                                    o_list = q_val.pop('options', [])
+                                    q_id = q_val.get('id')
+                                    question_obj, _ = QuizQuestion.objects.update_or_create(
+                                        quiz=quiz_instance, id=q_id if q_id else None,
+                                        defaults={'question_text': q_val.get('question_text'), 'order': idx, 'explanation': q_val.get('explanation', '')}
+                                    )
+                                    keep_q_ids.append(question_obj.id)
+                                    for o_val in o_list:
+                                        if o_val.get('option_text'):
+                                            o_id = o_val.pop('id', None)
+                                            QuizOption.objects.update_or_create(question=question_obj, id=o_id if o_id else None, defaults=o_val)
+                                if keep_q_ids:
+                                    quiz_instance.questions.exclude(id__in=keep_q_ids).delete()
 
-                # 4. FLASHCARDLAR
+                        if keep_mat_ids:
+                            content.materials.exclude(id__in=keep_mat_ids).delete()
+
+                # 3. FLASHCARDLAR (Özel Serializer'ın yoksa burası ID korumalı olmalı)
                 if cards_data is not None:
-                    keep_card_ids = []
-                    valid_cards = [c for c in cards_data if c.get('question')]
-                    for idx, c_item in enumerate(valid_cards):
-                        c_id = c_item.get('id')
-                        try: c_id_int = int(c_id) if c_id else None
-                        except: c_id_int = None
+                    if len(cards_data) > 0:
+                        keep_card_ids = []
+                        for idx, c_item in enumerate(cards_data):
+                            if not c_item.get('question'): continue
+                            c_id = c_item.get('id')
+                            card_obj, _ = Flashcard.objects.update_or_create(
+                                weekly_content=content,
+                                id=c_id if c_id else None,
+                                defaults={'question': c_item.get('question'), 'answer': c_item.get('answer'), 'order': idx}
+                            )
+                            keep_card_ids.append(card_obj.id)
+                        if keep_card_ids:
+                            content.flashcards.exclude(id__in=keep_card_ids).delete()
 
-                        card_obj = Flashcard.objects.filter(id=c_id_int).first() if c_id_int else None
-                        if card_obj:
-                            card_obj.question = c_item.get('question')
-                            card_obj.answer = c_item.get('answer')
-                            card_obj.order = idx
-                            card_obj.save()
-                        else:
-                            card_obj = Flashcard.objects.create(weekly_content=content, **c_item)
-                        keep_card_ids.append(card_obj.id)
-                    
-                    if keep_card_ids:
-                        content.flashcards.exclude(id__in=keep_card_ids).delete()
+                # 4. ENTRY QUESTIONS (Haftalık Giriş Testi)
+                if entry_questions_data is not None:
+                    if len(entry_questions_data) > 0:
+                        keep_entry_ids = []
+                        for eq_idx, eq_item in enumerate(entry_questions_data):
+                            if not eq_item.get('question_text'): continue
+                            eq_id = eq_item.get('id')
+                            t_week = eq_item.get('target_week')
+                            eq_opts = eq_item.pop('options', [])
+                            entry_q, _ = WeeklyPreTestQuestion.objects.update_or_create(
+                                id=eq_id if eq_id else None,
+                                defaults={'appearing_week': content, 'target_week': t_week, 'question_text': eq_item.get('question_text'), 'order': eq_idx}
+                            )
+                            keep_entry_ids.append(entry_q.id)
+                            for eo in eq_opts:
+                                if eo.get('option_text'):
+                                    eo_id = eo.pop('id', None)
+                                    WeeklyPreTestOption.objects.update_or_create(question=entry_q, id=eo_id if eo_id else None, defaults=eo)
+                        if keep_entry_ids:
+                            WeeklyPreTestQuestion.objects.filter(appearing_week=content).exclude(id__in=keep_entry_ids).delete()
 
                 return content
 
         except Exception as e:
-            print(f"--- KAYIT HATASI DETAYI: {str(e)} ---")
-            raise serializers.ValidationError({"error": f"Veritabanı hatası: {str(e)}"})
-
-    def update(self, instance, validated_data):
-        # Update tetiklendiğinde mevcut instance'ı koruyarak create mantığını çalıştır
-        return self.create(validated_data)
+            print(f"DEBUG: Kayıt Hatası -> {str(e)}")
+            raise serializers.ValidationError({"error": str(e)})
     
 
 
@@ -541,3 +628,26 @@ class BulkAcademicReportSerializer(serializers.Serializer):
             return f"%{res.score} ({res.correct_answers}D / {res.wrong_answers}Y)"
         return "Girilmedi"
 
+# --- HAFTALIK HAZIRLIK TESTİ SERIALIZERLARI ---
+
+class WeeklyPreTestOptionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WeeklyPreTestOption
+        fields = ['id', 'option_text', 'is_correct']
+
+# serializers.py içindeki bu kısmı şu şekilde değiştir:
+
+class WeeklyPreTestQuestionSerializer(serializers.ModelSerializer):
+    options = WeeklyPreTestOptionSerializer(many=True)
+    # DİKKAT: SlugRelatedField kullanarak hafta numarasına göre eşleşme sağlıyoruz
+    target_week = serializers.SlugRelatedField(
+        slug_field='week_number', 
+        queryset=WeeklyContent.objects.all()
+    )
+
+    class Meta:
+        model = WeeklyPreTestQuestion
+        fields = ['id', 'question_text', 'order', 'target_week', 'options']
+    class Meta:
+        model = WeeklyPreTestQuestion
+        fields = ['id', 'question_text', 'order', 'target_week_id', 'options']

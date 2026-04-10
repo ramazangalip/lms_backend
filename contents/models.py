@@ -251,3 +251,92 @@ class PreTestResult(models.Model):
 
     def __str__(self):
         return f"{self.student.first_name} - Skor: {self.score}"
+
+# --- HAFTALIK HAZIRLIK VE GEÇİCİ KİLİT SİSTEMİ ---
+
+class WeeklyPreTestQuestion(models.Model):
+    """
+    Her haftanın girişinde sorulacak olan 'Hatırlatıcı' sorular.
+    Örn: 3. haftaya girerken (appearing), 1. haftanın (target) konusu sorulur.
+    """
+    appearing_week = models.ForeignKey(
+        WeeklyContent, 
+        on_delete=models.CASCADE, 
+        related_name='entry_questions',
+        verbose_name="Hangi Haftanın Girişinde Sorulacak?"
+    )
+    target_week = models.ForeignKey(
+        WeeklyContent, 
+        on_delete=models.CASCADE, 
+        related_name='referenced_by_questions',
+        verbose_name="Hangi Haftanın Konusu? (Yanlışta Açılacak Hafta)"
+    )
+    question_text = models.TextField(verbose_name="Soru Metni")
+    order = models.PositiveIntegerField(default=0, verbose_name="Sıralama")
+
+    class Meta:
+        ordering = ['order']
+        verbose_name = "Haftalık Hazırlık Sorusu"
+        verbose_name_plural = "Haftalık Hazırlık Soruları"
+
+    def __str__(self):
+        return f"H.{self.appearing_week.week_number} Girişi -> H.{self.target_week.week_number} Sorusu"
+
+class WeeklyPreTestOption(models.Model):
+    """Haftalık hazırlık sorularının seçenekleri"""
+    question = models.ForeignKey(WeeklyPreTestQuestion, related_name='options', on_delete=models.CASCADE)
+    option_text = models.CharField(max_length=255, verbose_name="Seçenek Metni")
+    is_correct = models.BooleanField(default=False, verbose_name="Doğru mu?")
+
+    def __str__(self):
+        return self.option_text
+
+class TemporaryUnlock(models.Model):
+    """
+    Yanlış yapılan sorular neticesinde geçmiş haftaların 
+    kilitlerinin geçici olarak (2 gün) açılmasını sağlar.
+    """
+    student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='temporary_unlocks')
+    week = models.ForeignKey(WeeklyContent, on_delete=models.CASCADE)
+    unlocked_at = models.DateTimeField(auto_now_add=True)
+    unlock_until = models.DateTimeField(verbose_name="Kilit Ne Zamana Kadar Açık?")
+
+    @property
+    def is_active(self):
+        from django.utils import timezone
+        return timezone.now() < self.unlock_until
+
+    class Meta:
+        verbose_name = "Geçici Kilit Açma"
+        verbose_name_plural = "Geçici Kilit Açmaları"
+        unique_together = ('student', 'week') # Bir öğrenci için aynı haftada tek kayıt yeterli
+
+class WeeklyPreTestResult(models.Model):
+    """Öğrencinin her haftanın girişindeki test başarısını ve açılan telafi haftalarını tutar"""
+    student = models.ForeignKey(User, on_delete=models.CASCADE, related_name="weekly_pretest_results")
+    week = models.ForeignKey(WeeklyContent, on_delete=models.CASCADE)  # Hazırlık testinin sorulduğu hafta
+    is_completed = models.BooleanField(default=False)
+    completed_at = models.DateTimeField(auto_now=True)
+    
+    # --- İSTATİSTİKSEL VERİLER ---
+    correct_count = models.IntegerField(default=0)
+    wrong_count = models.IntegerField(default=0)
+    
+    # Yanlışlar sonucu açılan telafi haftalarını liste olarak tutar (Örn: [1, 3])
+    # Bu veri ileride yapay zeka analizleri için çok değerli olacak.
+    unlocked_weeks_json = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        unique_together = ('student', 'week')
+        verbose_name = "Haftalık Giriş Test Sonucu"
+        verbose_name_plural = "Haftalık Giriş Test Sonuçları"
+
+    def __str__(self):
+        return f"{self.student.email} - Hafta {self.week.week_number} (D:{self.correct_count} Y:{self.wrong_count})"
+
+    @property
+    def score_percentage(self):
+        total = self.correct_count + self.wrong_count
+        if total == 0:
+            return 0
+        return round((self.correct_count / total) * 100, 2)

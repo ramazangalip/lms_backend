@@ -167,3 +167,59 @@ class PreTestResultAdmin(admin.ModelAdmin):
     def score_display(self, obj):
         return f"%{obj.score}"
     score_display.short_description = "Başarı Puanı"
+
+# --- HAFTALIK GİRİŞ (HAZIRLIK) TESTİ SİSTEMİ ADMİN ---
+
+class WeeklyPreTestOptionInline(admin.TabularInline):
+    """Her giriş sorusunun altına şıkları ekler."""
+    model = WeeklyPreTestOption
+    extra = 5
+    fields = ('option_text', 'is_correct')
+
+@admin.register(WeeklyPreTestQuestion)
+class WeeklyPreTestQuestionAdmin(admin.ModelAdmin):
+    """Haftalık hazırlık soruları yönetimi."""
+    list_display = ('appearing_week_display', 'short_question', 'target_week_display', 'order')
+    list_filter = ('appearing_week', 'target_week')
+    ordering = ('appearing_week', 'order')
+    inlines = [WeeklyPreTestOptionInline]
+
+    def appearing_week_display(self, obj):
+        return f"Hafta {obj.appearing_week.week_number}"
+    appearing_week_display.short_description = "Sorulduğu Hafta"
+
+    def target_week_display(self, obj):
+        return f"Hafta {obj.target_week.week_number}"
+    target_week_display.short_description = "Hata Halinde Açılacak Hafta"
+
+    def short_question(self, obj):
+        return obj.question_text[:60] + "..." if len(obj.question_text) > 60 else obj.question_text
+    short_question.short_description = "Soru"
+
+@admin.register(WeeklyPreTestResult)
+class WeeklyPreTestResultAdmin(admin.ModelAdmin):
+    """Öğrencilerin haftalık hazırlık test sonuçları."""
+    list_display = ('student', 'week', 'is_completed', 'completed_at')
+    list_filter = ('week', 'is_completed', 'completed_at')
+    search_fields = ('student__email', 'student__first_name', 'student__last_name')
+    readonly_fields = ('completed_at',)
+
+# --- GEÇİCİ KİLİT AÇMA (TEMPORARY UNLOCK) SİSTEMİ ---
+
+@admin.register(TemporaryUnlock)
+class TemporaryUnlockAdmin(admin.ModelAdmin):
+    """Yanlış cevap sonucu açılan geçici hafta erişimleri."""
+    list_display = ('student', 'week_display', 'unlocked_at', 'unlock_until', 'is_active')
+    list_filter = ('unlocked_at', 'week')
+    search_fields = ('student__email',)
+    readonly_fields = ('unlocked_at',)
+
+    def week_display(self, obj):
+        return f"Hafta {obj.week.week_number}"
+    week_display.short_description = "Açılan Hafta"
+
+    def is_active(self, obj):
+        from django.utils import timezone
+        return obj.unlock_until > timezone.now()
+    is_active.boolean = True
+    is_active.short_description = "Erişim Aktif mi?"
