@@ -648,6 +648,4 @@ class WeeklyPreTestQuestionSerializer(serializers.ModelSerializer):
     class Meta:
         model = WeeklyPreTestQuestion
         fields = ['id', 'question_text', 'order', 'target_week', 'options']
-    class Meta:
-        model = WeeklyPreTestQuestion
-        fields = ['id', 'question_text', 'order', 'target_week_id', 'options']
+    
