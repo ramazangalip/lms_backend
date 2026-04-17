@@ -91,16 +91,30 @@ class WeeklyPreTestOptionSerializer(serializers.ModelSerializer):
         fields = ['id', 'option_text', 'is_correct']
 
 class WeeklyPreTestQuestionSerializer(serializers.ModelSerializer):
-    # ID'yi mutlaka IntegerField ve writable yapıyoruz
-    id = serializers.IntegerField(required=False)
-    options = WeeklyPreTestOptionSerializer(many=True)
+    options = WeeklyPreTestOptionSerializer(many=True, required=False)
+    id = serializers.IntegerField(required=False, allow_null=True)
     
-    # target_week zaten PrimaryKeyRelatedField olduğu için ID olarak gidip gelir, sorun çıkarmaz
-    target_week = serializers.PrimaryKeyRelatedField(queryset=WeeklyContent.objects.all())
+    # IntegerField yerine SerializerMethodField kullanıyoruz.
+    # Bu alan 'read_only'dir, bu yüzden POST sırasında Django buna dokunmaz.
+    target_week = serializers.SerializerMethodField()
 
     class Meta:
         model = WeeklyPreTestQuestion
         fields = ['id', 'question_text', 'order', 'target_week', 'options']
+
+    def get_target_week(self, obj):
+        """Veritabanından çıkarken objeyi sayıya çevirir."""
+        if obj.target_week:
+            return obj.target_week.week_number
+        return None
+
+    def to_internal_value(self, data):
+        """POST sırasında gelen veriyi içeri kabul eder (Süzgeçten geçirir)."""
+        # SerializerMethodField read-only olduğu için veriyi elle içeri almalıyız
+        internal_value = super().to_internal_value(data)
+        if 'target_week' in data:
+            internal_value['target_week'] = data['target_week']
+        return internal_value
 class WeeklyContentSerializer(serializers.ModelSerializer):
     id = serializers.CharField(read_only=True)
     
@@ -391,19 +405,39 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
                         for eq_idx, eq_item in enumerate(entry_questions_data):
                             if not eq_item.get('question_text'): continue
                             eq_id = eq_item.get('id')
-                            t_week = eq_item.get('target_week')
+                            
+                            # --- BURAYI DÜZELTTİK ---
+                            t_week_num = eq_item.get('target_week')
+                            target_week_obj = None
+                            if t_week_num:
+                                try:
+                                    # Numaradan gerçek objeyi (ID'yi) buluyoruz
+                                    target_week_obj = WeeklyContent.objects.get(week_number=int(t_week_num))
+                                except (WeeklyContent.DoesNotExist, ValueError):
+                                    # Eğer 2 numaralı hafta yoksa, varsayılan olarak 1. haftayı veya None ata
+                                    target_week_obj = WeeklyContent.objects.filter(week_number=1).first()
+                            # -------------------------
+
                             eq_opts = eq_item.pop('options', [])
                             entry_q, _ = WeeklyPreTestQuestion.objects.update_or_create(
                                 id=eq_id if eq_id else None,
-                                defaults={'appearing_week': content, 'target_week': t_week, 'question_text': eq_item.get('question_text'), 'order': eq_idx}
+                                defaults={
+                                    'appearing_week': content, 
+                                    'target_week': target_week_obj, # <--- ARTIK SAYI DEĞİL, OBJE GİDİYOR
+                                    'question_text': eq_item.get('question_text'), 
+                                    'order': eq_idx
+                                }
                             )
                             keep_entry_ids.append(entry_q.id)
+                            # Seçenekler (Options) kısmı aynı kalabilir...
                             for eo in eq_opts:
                                 if eo.get('option_text'):
                                     eo_id = eo.pop('id', None)
-                                    WeeklyPreTestOption.objects.update_or_create(question=entry_q, id=eo_id if eo_id else None, defaults=eo)
-                        if keep_entry_ids:
-                            WeeklyPreTestQuestion.objects.filter(appearing_week=content).exclude(id__in=keep_entry_ids).delete()
+                                    WeeklyPreTestOption.objects.update_or_create(
+                                        question=entry_q, 
+                                        id=eo_id if eo_id else None, 
+                                        defaults=eo
+                                    )
 
                 return content
 
@@ -637,15 +671,5 @@ class WeeklyPreTestOptionSerializer(serializers.ModelSerializer):
 
 # serializers.py içindeki bu kısmı şu şekilde değiştir:
 
-class WeeklyPreTestQuestionSerializer(serializers.ModelSerializer):
-    options = WeeklyPreTestOptionSerializer(many=True)
-    # DİKKAT: SlugRelatedField kullanarak hafta numarasına göre eşleşme sağlıyoruz
-    target_week = serializers.SlugRelatedField(
-        slug_field='week_number', 
-        queryset=WeeklyContent.objects.all()
-    )
 
-    class Meta:
-        model = WeeklyPreTestQuestion
-        fields = ['id', 'question_text', 'order', 'target_week', 'options']
     
