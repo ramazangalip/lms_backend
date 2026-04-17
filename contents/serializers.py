@@ -192,34 +192,41 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
         return progress_obj.is_completed if progress_obj else False
 
     def get_is_locked(self, obj):
-        if obj.week_number == 1:
-            return False
-
-        request = self.context.get('request')
-        if not request or not request.user or not request.user.is_authenticated:
-            return True
-        if getattr(request.user, 'is_teacher', False) or request.user.is_staff:
-            return False
-
-        # Geçici Kilit Kontrolü
-        try:
-            from .models import TemporaryUnlock
-            if TemporaryUnlock.objects.filter(student=request.user, week=obj, unlock_until__gt=timezone.now()).exists():
-                return False
-        except:
-            pass
-
         now = timezone.now()
+        request = self.context.get('request')
+
+        # 1. YETKİ KONTROLÜ
+        if request and request.user and (getattr(request.user, 'is_teacher', False) or request.user.is_staff):
+            return False
+
+        # 2. HOCA MÜDAHALESİ (MUTLAK TARİH KİLİDİ)
+        # Hoca tarihi ileriye aldıysa, bitirilmiş olsa bile o hafta "Erişilemez" olur.
         if obj.release_date and now < obj.release_date:
             return True
 
-        # Önceki hafta kontrolü
-        previous_week = WeeklyContent.objects.filter(week_number=obj.week_number - 1).first()
-        if previous_week:
-            from .models import StudentProgress
-            prev_progress = StudentProgress.objects.filter(student=request.user, weekly_content=previous_week).first()
-            if not prev_progress or not prev_progress.is_completed:
-                return True
+        # 3. SIRALI GEÇİŞ BARİKATI (Sadece yayınlanmış haftalar arasında zincir kurar)
+        if obj.week_number > 1:
+            # Bir önceki haftayı bul
+            previous_week = WeeklyContent.objects.filter(week_number=obj.week_number - 1).first()
+            
+            if previous_week:
+                # ÖNEMLİ: Eğer önceki haftanın da tarihi gelmişse (yani şu an aktifse/aktiftiyse)
+                # o zaman bitirilme şartı ara.
+                if previous_week.release_date and now >= previous_week.release_date:
+                    from .models import StudentProgress
+                    prev_progress = StudentProgress.objects.filter(
+                        student=request.user, 
+                        weekly_content=previous_week
+                    ).first()
+                    
+                    if not prev_progress or not prev_progress.is_completed:
+                        return True
+                
+                # NOT: Eğer önceki hafta hoca tarafından ileri bir tarihe kilitlendiyse,
+                # yukarıdaki 'if'e girmez ve 3. haftanın önünü kesmez.
+
+        # 4. VARSAYILAN DURUM
+        # Tarihi gelmişse ve önünde engel yoksa aç.
         return False
 
     def get_lock_reason(self, obj):
