@@ -123,7 +123,7 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
     materials = MaterialSerializer(many=True, required=False)
     flashcards = FlashcardSerializer(many=True, required=False)
 
-    
+    total_score = serializers.SerializerMethodField() # 1. Burası doğru mu?
     is_entry_test_passed = serializers.SerializerMethodField()
     is_entry_test_required = serializers.SerializerMethodField()
     pre_test_questions = PreTestQuestionSerializer(many=True, required=False, allow_null=True)
@@ -145,7 +145,7 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
             'is_intro_watched', 'materials', 'flashcards', 
             'progress', 'is_completed', 'pre_test_questions',
             'entry_questions', 'is_entry_test_passed',
-            'is_entry_test_required'
+            'is_entry_test_required','total_score'
         ]
 
     # BU METODU EKLE
@@ -301,6 +301,14 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
             return WeeklyPreTestResult.objects.filter(student=request.user, week=obj, is_completed=True).exists()
         except:
             return True
+        
+    def get_total_score(self, obj):
+        request = self.context.get('request')
+        # Kullanıcı giriş yapmışsa direkt onun total_points alanını döndür
+        if request and request.user and request.user.is_authenticated:
+            # User modelindeki total_points alanını okuyoruz
+            return getattr(request.user, 'total_points', 0)
+        return 0
         
     
 
