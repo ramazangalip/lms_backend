@@ -14,4 +14,6 @@ urlpatterns = [
     # Şifre Sıfırlama İşlemleri
     path('password-reset-send-otp/', SendResetOTPView.as_view(), name='password_reset_send_otp'),
     path('password-reset-confirm/', PasswordResetConfirmView.as_view(), name='password_reset_confirm'),
+    path('profile/', UserProfileView.as_view(), name='user_profile'),
+    path('leaderboard/', DepartmentLeaderboardView.as_view(), name='leaderboard'),
 ]

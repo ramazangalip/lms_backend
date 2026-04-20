@@ -223,3 +223,12 @@ class TemporaryUnlockAdmin(admin.ModelAdmin):
         return obj.unlock_until > timezone.now()
     is_active.boolean = True
     is_active.short_description = "Erişim Aktif mi?"
+
+@admin.register(Badge)
+class BadgeAdmin(admin.ModelAdmin):
+    list_display = ('name', 'badge_type', 'icon_name', 'color')
+    list_filter = ('badge_type',)
+
+@admin.register(StudentBadge)
+class StudentBadgeAdmin(admin.ModelAdmin):
+    list_display = ('student', 'badge', 'earned_at')

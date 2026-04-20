@@ -340,3 +340,34 @@ class WeeklyPreTestResult(models.Model):
         if total == 0:
             return 0
         return round((self.correct_count / total) * 100, 2)
+    
+class Badge(models.Model):
+    BADGE_TYPES = (
+        ('first_material', 'İlk Materyal Tamamlama'),
+        ('double_test_streak', '2 Hafta Üst Üste Başarı'),
+        ('manual', 'Manuel (Hoca Tarafından Verilen)'),
+    )
+
+    name = models.CharField(max_length=100, verbose_name="Rozet Adı")
+    description = models.TextField(verbose_name="Rozet Açıklaması")
+    icon_name = models.CharField(max_length=50, help_text="Lucide ikon adı (örn: Zap, Trophy, Star)")
+    color = models.CharField(max_length=20, default="#FACC15", help_text="Tailwind rengi veya HEX kodu")
+    badge_type = models.CharField(max_length=30, choices=BADGE_TYPES, default='manual')
+    requirement_text = models.CharField(max_length=255, verbose_name="Gereksinim Metni", help_text="Örn: 2 hafta üst üste testi tamamla")
+
+    class Meta:
+        verbose_name = "Rozet Tanımı"
+        verbose_name_plural = "Rozet Tanımları"
+
+    def __str__(self):
+        return self.name
+
+class StudentBadge(models.Model):
+    student = models.ForeignKey(User, on_delete=models.CASCADE, related_name="earned_badges")
+    badge = models.ForeignKey(Badge, on_delete=models.CASCADE)
+    earned_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('student', 'badge')
+        verbose_name = "Öğrenci Rozeti"
+        verbose_name_plural = "Öğrenci Rozetleri"

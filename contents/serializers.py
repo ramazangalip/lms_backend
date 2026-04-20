@@ -684,7 +684,25 @@ class WeeklyPreTestOptionSerializer(serializers.ModelSerializer):
         model = WeeklyPreTestOption
         fields = ['id', 'option_text', 'is_correct']
 
-# serializers.py içindeki bu kısmı şu şekilde değiştir:
+class BadgeStatusSerializer(serializers.ModelSerializer):
+    is_earned = serializers.SerializerMethodField()
+    earned_at = serializers.SerializerMethodField()
 
+    class Meta:
+        model = Badge
+        fields = ['id', 'name', 'description', 'icon_name', 'color', 'requirement_text', 'is_earned', 'earned_at']
+
+    def get_is_earned(self, obj):
+        request = self.context.get('request')
+        if request and request.user and request.user.is_authenticated:
+            return StudentBadge.objects.filter(student=request.user, badge=obj).exists()
+        return False
+
+    def get_earned_at(self, obj):
+        request = self.context.get('request')
+        if request and request.user and request.user.is_authenticated:
+            earned = StudentBadge.objects.filter(student=request.user, badge=obj).first()
+            return earned.earned_at if earned else None
+        return None
 
     

@@ -1047,3 +1047,78 @@ class WeeklyPreTestSubmitView(APIView):
             "wrong_count": wrong_count,
             "unlocked_week_numbers": unlocked_week_numbers
         }, status=200)
+    
+class StudentBadgeListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            # 1. Rozet atama mantığını çalıştır
+            try:
+                self.check_and_assign_badges(request.user)
+            except Exception as e:
+                print(f"Atama Hatası: {e}")
+
+            # 2. Rozetleri çek
+            badges = Badge.objects.all()
+
+            # 3. DÜZELTME: many=True ekliyoruz çünkü 'badges' bir listedir!
+            serializer = BadgeStatusSerializer(
+                badges, 
+                many=True, # <--- Eksik olan ve 500 hatası veren kısım burasıydı!
+                context={'request': request}
+            )
+            
+            return Response(serializer.data, status=200)
+
+        except Exception as e:
+            print(f"Kritik Hata: {str(e)}")
+            return Response({"error": str(e)}, status=500)
+
+    def check_and_assign_badges(self, user):
+        from .models import Badge, StudentBadge, StudentProgress, StudentQuizAttempt
+        
+        # --- ROZET 1: İLK MATERYAL ---
+        try:
+            if StudentProgress.objects.filter(student=user, is_completed=True).exists():
+                badge = Badge.objects.filter(badge_type='first_material').first()
+                if badge:
+                    StudentBadge.objects.get_or_create(student=user, badge=badge)
+        except Exception as e:
+            print(f"HATA (İlk Materyal): {e}")
+
+        # --- ROZET 2: 2 HAFTA ÜST ÜSTE FULL ---
+        try:
+            # Sadece puanı 100 olanları çekiyoruz
+            attempts = StudentQuizAttempt.objects.filter(
+                student=user, 
+                score=100
+            ).order_by('-completed_at')
+
+            distinct_weeks = []
+            seen_weeks = set()
+            
+            for att in attempts:
+                # GÜVENLİ ERİŞİM: Hiçbir aşamada None hatası almamak için
+                if hasattr(att, 'quiz') and att.quiz:
+                    if hasattr(att.quiz, 'material') and att.quiz.material:
+                        parent = att.quiz.material.parent_content
+                        if parent and parent.week_number is not None:
+                            w_num = parent.week_number
+                            if w_num not in seen_weeks:
+                                distinct_weeks.append(w_num)
+                                seen_weeks.add(w_num)
+                
+                if len(distinct_weeks) == 2:
+                    break
+
+            if len(distinct_weeks) == 2:
+                # Ardışık hafta kontrolü (11-10=1 gibi)
+                if abs(distinct_weeks[0] - distinct_weeks[1]) == 1:
+                    badge = Badge.objects.filter(badge_type='double_test_streak').first()
+                    if badge:
+                        StudentBadge.objects.get_or_create(student=user, badge=badge)
+        except Exception as e:
+            print(f"HATA (2 Hafta Seri): {e}")
+
+
