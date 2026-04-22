@@ -116,13 +116,18 @@ class DepartmentLeaderboardView(APIView):
 
             # Doğru ilişki adı: 'completedmaterial' (Model isminin küçük harfi)
             # Sıralama: Önce Puan (Azalan), sonra en eski tamamlama tarihi (Artan)
+            # ... View içindeki leaderboard sorgusu ...
+
             leaderboard = User.objects.filter(
                 department=user.department, 
                 is_student=True
+            ).exclude(
+                # Senin ismine sahip olan öğrenciyi listeden tamamen çıkartır
+                first_name="Ramazan Said", 
+                last_name="Galip"
             ).annotate(
                 first_completion=Coalesce(
                     Min('completedmaterial__completed_at'), 
-                    # 2099 yerine şu anın çok ilerisinde, timezone uyumlu bir tarih
                     Value(timezone.make_aware(datetime(2099, 1, 1)), output_field=DateTimeField())
                 )
             ).order_by('-total_points', 'first_completion')[:5]
