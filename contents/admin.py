@@ -1,5 +1,7 @@
 from django.contrib import admin
 from .models import *
+from django.urls import reverse
+from django.utils.safestring import mark_safe
 
 # --- INLINES ---
 
@@ -232,3 +234,63 @@ class BadgeAdmin(admin.ModelAdmin):
 @admin.register(StudentBadge)
 class StudentBadgeAdmin(admin.ModelAdmin):
     list_display = ('student', 'badge', 'earned_at')
+
+
+# 1. Şıklar için Inline (Soru düzenleme sayfasında görünecek)
+class SurveyOptionInline(admin.TabularInline):
+    model = SurveyOption
+    extra = 5  # Genelde Likert 5'lidir, 5 boş satır gelsin
+    fields = ('option_text', 'value')
+
+# 2. Sorular için Inline (Anket sayfasında görünecek)
+class SurveyQuestionInline(admin.TabularInline):
+    model = SurveyQuestion
+    extra = 1
+    # Burada 'get_options_link' ekleyerek şıklara hızlı geçiş sağlıyoruz
+    readonly_fields = ('get_options_link',)
+    fields = ('text', 'category', 'get_options_link')
+
+    def get_options_link(self, obj):
+        if obj.id:
+            # Soru kaydedilmişse, o sorunun şıklarını düzenleme sayfasına link veriyoruz
+            url = reverse('admin:contents_surveyquestion_change', args=[obj.id])
+            return mark_safe(f'<a href="{url}" target="_blank">🔍 Şıkları Düzenle</a>')
+        return "Önce soruyu kaydedin"
+    get_options_link.short_description = "Seçenekler"
+
+# 3. Anket Admin (Ana Yönetim)
+@admin.register(Survey)
+class SurveyAdmin(admin.ModelAdmin): # <--- Burayı kontrol et
+    list_display = ('week_number', 'title')
+    list_filter = ('week_number',)
+    search_fields = ('title',)
+    inlines = [SurveyQuestionInline]
+
+# 4. Soru Admin (Şıklar burada direkt görünecek)
+@admin.register(SurveyQuestion)
+class SurveyQuestionAdmin(admin.ModelAdmin):
+    list_display = ('text', 'survey', 'category', 'get_options_count')
+    list_filter = ('survey', 'category')
+    search_fields = ('text', 'category')
+    # İŞTE BURASI: Sorunun içine girdiğinde şıkları (options) direkt görebilirsin
+    inlines = [SurveyOptionInline]
+
+    def get_options_count(self, obj):
+            # Related name ile uğraşmadan, SurveyOption tablosuna direkt soruyoruz: 
+            # "Bu soruya (obj) bağlı kaç tane şık var?"
+            from .models import SurveyOption
+            return SurveyOption.objects.filter(question=obj).count()
+        
+    get_options_count.short_description = "Şık Sayısı"
+
+# 5. Öğrenci Cevapları Admin
+@admin.register(StudentSurveyResponse)
+class StudentSurveyResponseAdmin(admin.ModelAdmin):
+    list_display = ('student', 'get_question_text', 'answer_text', 'answer_value', 'created_at')
+    list_filter = ('student', 'question__survey')
+    # Modelde 'answer_text' artık CharField olduğu için direkt kullanabiliriz
+    # get_answer_text fonksiyonuna gerek kalmadı (eğer modelde answer_text alanı varsa)
+    
+    def get_question_text(self, obj):
+        return obj.question.text[:50] + "..."
+    get_question_text.short_description = 'Soru'

@@ -20,6 +20,7 @@ from vertexai.generative_models import GenerativeModel
 from google.oauth2 import service_account
 import os
 import json
+from rest_framework import status, permissions
 
 # --- YARDIMCI FONKSİYONLAR ---
 
@@ -63,59 +64,44 @@ class WeeklyContentView(APIView):
         week_number = request.query_params.get('week_number')
         user = request.user
         
-        # 1. LİSTE GÖRÜNÜMÜ (Tüm haftaların genel bilgisi)
-        if not week_number:
-            contents = WeeklyContent.objects.all().order_by('week_number').prefetch_related('materials', 'flashcards')
-            serializer = WeeklyContentSerializer(contents, many=True, context={'request': request})
-            return Response(serializer.data, status=status.HTTP_200_OK)
+        # 1. TEK HAFTA DETAYI (Akademisyen düzenleme yaparken veya öğrenci haftaya girdiğinde)
+        if week_number:
+            content = WeeklyContent.objects.filter(week_number=week_number).first()
+            if not content:
+                return Response({"detail": "Bu hafta bulunamadı."}, status=status.HTTP_404_NOT_FOUND)
 
-        # 2. DETAY GÖRÜNÜMÜ (Spesifik bir hafta içeriği)
-        content = WeeklyContent.objects.filter(week_number=week_number).first()
-        if not content:
-            return Response({"detail": "Bu hafta bulunamadı."}, status=status.HTTP_404_NOT_FOUND)
+            # Context göndermek hayati önem taşıyor!
+            serializer = WeeklyContentSerializer(content, context={'request': request})
+            data = serializer.data
 
-        # Serializer'ı hazırla
-        serializer = WeeklyContentSerializer(content, context={'request': request})
-        data = serializer.data
+            # Hafta 1 özel durumunu manuel eklemeye devam edebiliriz
+            if str(week_number) == "1":
+                from .models import PreTestQuestion
+                from .serializers import PreTestQuestionSerializer
+                questions = PreTestQuestion.objects.all().prefetch_related('options')
+                data['pre_test_questions'] = PreTestQuestionSerializer(questions, many=True).data if questions.exists() else []
 
-        # --- HAFTA 1 ÖZEL: SİSTEM GİRİŞ ÖN TESTİ ---
-        if str(week_number) == "1":
-            from .models import PreTestQuestion
-            from .serializers import PreTestQuestionSerializer
-            
-            questions = PreTestQuestion.objects.all().prefetch_related('options')
-            data['pre_test_questions'] = PreTestQuestionSerializer(questions, many=True).data if questions.exists() else []
+            return Response(data, status=status.HTTP_200_OK)
 
-        # --- ÖĞRENCİ İÇİN GİRİŞ TESTİ (ENTRY TEST) KONTROLÜ VE MATERYAL GİZLEME ---
-        is_teacher = getattr(user, 'is_teacher', False) or user.is_staff
+        # 2. LİSTE GÖRÜNÜMÜ (Hem Akademisyen Paneli hem Öğrenci Dashboard burayı kullanır)
+        # Prefetch_related kullanarak SQL sorgu sayısını azaltıyoruz
+        contents = WeeklyContent.objects.all().order_by('week_number').prefetch_related(
+            'materials', 'flashcards', 'materials__quiz', 'materials__quiz__questions'
+        )
         
-        if not is_teacher:
-            # 1. Hafta hariç diğer haftalarda giriş testi kontrolü yap
-            if int(week_number) > 1:
-                from .models import WeeklyPreTestResult
-                
-                # Öğrenci bu haftanın giriş testini tamamladı mı?
-                is_passed = WeeklyPreTestResult.objects.filter(
-                    student=user, 
-                    week=content, 
-                    is_completed=True
-                ).exists()
-                
-                if not is_passed:
-                    # Test geçilmemişse: Materyalleri ve Kaynakları veriden temizle
-                    data['materials'] = []
-                    data['flashcards'] = []
-                    data['is_entry_test_required'] = True # Frontend'e uyarı gönder
-                else:
-                    data['is_entry_test_required'] = False
-            else:
-                # 1. Hafta için giriş testi zorunluluğu yok (Sadece PreTest var)
-                data['is_entry_test_required'] = False
+        # many=True durumunda her bir içerik için Serializer içindeki metodlar çalışacak
+        serializer = WeeklyContentSerializer(contents, many=True, context={'request': request})
+        
+        # DEBUG: Akademisyen paneli için veri gidiyor mu terminalden bak
+        if getattr(user, 'is_teacher', False) or user.is_staff:
+            print(f"DEBUG: Akademisyen {user.username} için {len(serializer.data)} hafta paketlendi.")
 
-        return Response(data, status=status.HTTP_200_OK)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    # post metodu aynı kalacak...
 
     def post(self, request):
-        """Akademisyen Paneli: İçerik Güncelleme ve Soru Ekleme"""
+        """Akademisyen Paneli: İçerik Güncelleme, Soru Ekleme ve Anket Kaydı"""
         if not getattr(request.user, 'is_teacher', False) and not request.user.is_staff:
             return Response({"error": "Yetkiniz bulunmamaktadır."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -125,9 +111,8 @@ class WeeklyContentView(APIView):
 
         try:
             with transaction.atomic():
+                # 1. HAFTALIK İÇERİĞİ KAYDET/GÜNCELLE
                 content_instance = WeeklyContent.objects.filter(week_number=week_number).first()
-
-                # Kayıt mantığı tamamen Serializer.create/update içinde (entry_questions dahil)
                 serializer = WeeklyContentSerializer(
                     content_instance, 
                     data=request.data, 
@@ -137,6 +122,36 @@ class WeeklyContentView(APIView):
 
                 if serializer.is_valid():
                     serializer.save()
+                    
+                    # --- 2. ANKET (SURVEY) VE SORULARI KAYDETME MANTIĞI ---
+                    has_survey = request.data.get('has_survey', False)
+                    survey_title = request.data.get('survey_title')
+                    survey_questions_data = request.data.get('survey_questions', [])
+
+                    if has_survey and survey_title:
+                        from .models import Survey, SurveyQuestion
+                        # Anketi oluştur veya güncelle
+                        survey_obj, created = Survey.objects.update_or_create(
+                            week_number=week_number,
+                            defaults={
+                                'title': survey_title,
+                                'description': f"{week_number}. Hafta Bilimsel Ölçeği"
+                            }
+                        )
+                        
+                        # Mevcut soruları temizle ve yenilerini ekle (En temiz güncelleme yolu)
+                        survey_obj.questions.all().delete()
+                        for q_data in survey_questions_data:
+                            SurveyQuestion.objects.create(
+                                survey=survey_obj,
+                                text=q_data.get('text'),
+                                category=q_data.get('category', '')
+                            )
+                    else:
+                        # Eğer has_survey False gönderildiyse o haftanın anketini sistemden kaldır
+                        from .models import Survey
+                        Survey.objects.filter(week_number=week_number).delete()
+
                     return Response(serializer.data, status=status.HTTP_201_CREATED)
                 
                 # Hata durumunda loglama
@@ -144,7 +159,8 @@ class WeeklyContentView(APIView):
                 return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         except Exception as e:
-            print("--- HAFTA KAYDETME HATASI ---")
+            print("--- HAFTA/ANKET KAYDETME HATASI ---")
+            import traceback
             traceback.print_exc()
             return Response(
                 {"error": f"Sunucu hatası: {str(e)}"}, 
@@ -171,7 +187,8 @@ class ContentDetailView(APIView):
     def get(self, request, week_number):
         user = request.user
         
-        # 1. TEMEL KİLİT KONTROLÜ (Tanıtım ve Ön Test)
+        # 1. TEMEL SİSTEM KİLİDİ (Tanıtım Videosu ve Genel Ön Test - 1. Hafta Öncesi)
+        # Not: is_pre_requirements_met fonksiyonunun tanımlı olduğunu varsayıyoruz.
         if int(week_number) > 1 and not is_pre_requirements_met(user):
              return Response(
                 {"error": "Haftalık içeriklere erişebilmek için Tanıtım Videosunu izlemeli ve Ön Testi tamamlamalısınız."}, 
@@ -186,31 +203,55 @@ class ContentDetailView(APIView):
         serializer = WeeklyContentSerializer(content, context={'request': request})
         data = serializer.data
 
-        # --- YENİ SİSTEM: HAFTALIK GİRİŞ TESTİ ZORUNLULUĞU ---
+        # --- YENİ SİSTEM: HAFTALIK GİRİŞ TESTİ VE ANKET ZORUNLULUĞU ---
         is_teacher = getattr(user, 'is_teacher', False) or user.is_staff
         
         if not is_teacher:
-            # 1. haftadan sonraki haftalar için giriş testi kontrolü
+            # 1. haftadan sonraki tüm haftalar için kilit kontrolü
             if int(week_number) > 1:
-                from .models import WeeklyPreTestResult
                 
-                # Öğrenci bu haftanın giriş kapısını (testini) açtı mı?
-                is_passed = WeeklyPreTestResult.objects.filter(
+                # A) Haftalık Ön Değerlendirme Testi Kontrolü
+                pre_test_passed = WeeklyPreTestResult.objects.filter(
                     student=user, 
                     week=content, 
                     is_completed=True
                 ).exists()
                 
-                if not is_passed:
-                    # GÜVENLİK: Test geçilmemişse materyalleri siliyoruz
+                # B) Haftalık Anket Ölçeği Kontrolü
+                # Bu haftaya ait Survey'in en az bir sorusuna cevap verilmiş mi?
+                survey_completed = StudentSurveyResponse.objects.filter(
+                    student=user, 
+                    question__survey__week_number=week_number
+                ).exists()
+                
+                # KİLİT MEKANİZMASI: İkisinden biri eksikse materyalleri gizle
+                if not pre_test_passed or not survey_completed:
+                    # Güvenlik için veriyi temizle
                     data['materials'] = []
                     data['flashcards'] = []
-                    data['is_entry_test_required'] = True
+                    
+                    # Frontend tarafı için durum bayrakları (Flags)
+                    data['is_locked'] = True
+                    data['is_entry_test_required'] = not pre_test_passed
+                    data['is_survey_required'] = not survey_completed
+                    
+                    # Kullanıcıya detaylı mesaj döndür
+                    if not pre_test_passed and not survey_completed:
+                        data['lock_message'] = "Bu haftanın materyallerine erişmek için hem Ön Değerlendirme Testini hem de Anketi tamamlamalısınız."
+                    elif not pre_test_passed:
+                        data['lock_message'] = "Lütfen önce bu haftanın Ön Değerlendirme Testini tamamlayın."
+                    else:
+                        data['lock_message'] = "Lütfen önce bu haftanın Anketini tamamlayın."
                 else:
+                    # İki şart da sağlanmışsa kilitleri aç
+                    data['is_locked'] = False
                     data['is_entry_test_required'] = False
+                    data['is_survey_required'] = False
             else:
-                # 1. hafta için zaten Ön Test (PreTest) var, bu yüzden ekstra giriş testi zorunlu değil
+                # 1. Hafta için (Tanıtım haftası vb.) kilitleri varsayılan olarak açıyoruz
+                data['is_locked'] = False
                 data['is_entry_test_required'] = False
+                data['is_survey_required'] = False
 
         return Response(data, status=status.HTTP_200_OK)
 
@@ -1122,3 +1163,96 @@ class StudentBadgeListView(APIView):
             print(f"HATA (2 Hafta Seri): {e}")
 
 
+class SurveyDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, week_number):
+        # İlgili haftanın anketini ve sorularını getirir
+        try:
+            survey = Survey.objects.get(week_number=week_number)
+            serializer = SurveySerializer(survey)
+            return Response(serializer.data)
+        except Survey.DoesNotExist:
+            return Response({"detail": "Bu hafta için anket bulunamadı."}, status=404)
+
+   # SurveyDetailView içindeki POST metodunu şu şekilde güncelle:
+    def post(self, request, week_number):
+        # Frontend'den gelen veri yapısını esnek şekilde karşıla
+        data = request.data
+        responses_list = data.get('answers', data) if isinstance(data, dict) else data
+
+        if not isinstance(responses_list, list):
+            return Response({"error": "Geçersiz veri formatı. Liste bekleniyor."}, status=400)
+
+        responses_to_create = []
+        from .models import SurveyOption, StudentSurveyResponse, SurveyQuestion
+
+        try:
+            for item in responses_list:
+                q_id = item.get('question_id')
+                val = item.get('answer_value')
+
+                if q_id is None or val is None:
+                    continue
+
+                # --- DİNAMİK ŞIK BULMA MANTIĞI ---
+                # Soruya ait şıklar içinden tam olarak o değere (1, 2, 3 vb.) sahip olanı getir
+                opt = SurveyOption.objects.filter(question_id=q_id, value=val).first()
+                
+                if opt:
+                    # Eğer DB'de şık tanımlıysa, hocanın yazdığı metni al
+                    ans_metni = opt.option_text
+                else:
+                    # EĞER ŞIK BULUNAMAZSA:
+                    # Sabit metin koymak yerine, o sorunun o andaki şıklarını debug etmek için
+                    # şık metni yerine uyarı mesajı yazıyoruz. 
+                    # Bu sayede admin panelinde hatanın nedenini anlarsın.
+                    ans_metni = f"Hata: {val} değerine ait şık metni bulunamadı!"
+
+                responses_to_create.append(StudentSurveyResponse(
+                    student=request.user,
+                    question_id=q_id,
+                    answer_value=val,
+                    answer_text=ans_metni
+                ))
+
+            # Kayıt işlemi
+            if responses_to_create:
+                # Mükerrer kaydı önlemek için (Aynı öğrenci aynı soruya tekrar cevap verirse)
+                q_ids = [r.question_id for r in responses_to_create]
+                StudentSurveyResponse.objects.filter(student=request.user, question_id__in=q_ids).delete()
+                
+                StudentSurveyResponse.objects.bulk_create(responses_to_create)
+                return Response({"detail": "Anket cevapları dinamik olarak kaydedildi."}, status=201)
+            
+            return Response({"error": "İşlenecek veri bulunamadı."}, status=400)
+
+        except Exception as e:
+            return Response({"error": f"Sunucu hatası: {str(e)}"}, status=500)
+
+class AcademicSurveyAnalyticsView(APIView):
+    permission_classes = [permissions.IsAdminUser] # Sadece Akademisyen/Admin
+
+    def get(self, request):
+        # Bölüm bazlı ve anket bazlı filtreleme
+        dept = request.query_params.get('department')
+        survey_id = request.query_params.get('survey_id')
+        
+        responses = StudentSurveyResponse.objects.all()
+        
+        if dept:
+            responses = responses.filter(student__department=dept)
+        if survey_id:
+            responses = responses.filter(question__survey_id=survey_id)
+            
+        # Basit bir raporlama formatı
+        report = []
+        for r in responses:
+            report.append({
+                "student": r.student.get_full_name(),
+                "question": r.question.text,
+                "answer": r.answer_value,
+                "category": r.question.category
+            })
+        return Response(report)
+    

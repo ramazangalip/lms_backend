@@ -1,4 +1,5 @@
 from django.db import models
+from django.contrib import admin
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
@@ -371,3 +372,49 @@ class StudentBadge(models.Model):
         unique_together = ('student', 'badge')
         verbose_name = "Öğrenci Rozeti"
         verbose_name_plural = "Öğrenci Rozetleri"
+
+class Survey(models.Model):
+    title = models.CharField(max_length=255, verbose_name="Anket Başlığı")
+    description = models.TextField(blank=True, verbose_name="Açıklama")
+    week_number = models.PositiveIntegerField(unique=True, verbose_name="Hangi Haftanın Kilidi?")
+
+    def __str__(self):
+        return f"Hafta {self.week_number} - {self.title}"
+
+class SurveyQuestion(models.Model):
+    survey = models.ForeignKey(Survey, on_delete=models.CASCADE, related_name='questions')
+    text = models.TextField(verbose_name="Soru Metni")
+    category = models.CharField(max_length=100, blank=True, verbose_name="Alt Boyut / Kategori")
+
+    def __str__(self):
+        return self.text[:50]
+
+class StudentSurveyResponse(models.Model):
+    student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='survey_responses')
+    question = models.ForeignKey(SurveyQuestion, on_delete=models.CASCADE)
+    answer_value = models.IntegerField(verbose_name="Likert Değeri (1-5)")
+    # Bu alan artık fiziksel olarak DB'de duracak
+    answer_text = models.CharField(max_length=255, verbose_name="Seçilen Şık Metni", null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('student', 'question')
+
+    def __str__(self):
+        # Burada direkt veritabanındaki sütunu (self.answer_text) döndürür
+        return f"{self.student.get_full_name()} - {self.answer_text}"
+
+
+# Soruları anketin içinde satır içi (inline) düzenlemek için
+class SurveyQuestionInline(admin.TabularInline):
+    model = SurveyQuestion
+    extra = 1  # Varsayılan olarak kaç boş soru satırı görünsün?
+
+
+class SurveyOption(models.Model):
+    question = models.ForeignKey(SurveyQuestion, on_delete=models.CASCADE, related_name='options')
+    option_text = models.CharField(max_length=255, verbose_name="Seçenek Metni")
+    value = models.IntegerField(verbose_name="Puan Değeri") # 1, 2, 3, 4, 5 gibi
+
+    def __str__(self):
+        return f"{self.option_text} ({self.value})"

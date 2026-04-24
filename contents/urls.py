@@ -33,5 +33,7 @@ urlpatterns = [
     path('week/<int:week_number>/submit-entry-test/', WeeklyPreTestSubmitView.as_view(), name='weekly-entry-test-submit'),
     path('student-badges/', StudentBadgeListView.as_view(), name='student-badges'),
     
+    path('surveys/week/<int:week_number>/', SurveyDetailView.as_view(), name='survey-detail'),
+    path('academic/surveys/report/', AcademicSurveyAnalyticsView.as_view(), name='survey-report'),
 
 ]

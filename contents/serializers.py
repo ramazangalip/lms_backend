@@ -128,6 +128,15 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
     is_entry_test_required = serializers.SerializerMethodField()
     pre_test_questions = PreTestQuestionSerializer(many=True, required=False, allow_null=True)
     entry_questions = WeeklyPreTestQuestionSerializer(many=True, required=False)
+
+    survey_questions = serializers.JSONField(write_only=True, required=False, allow_null=True)
+    survey_title = serializers.CharField(write_only=True, required=False, allow_blank=True, allow_null=True)
+    has_survey = serializers.BooleanField(write_only=True, required=False)
+
+    # 2. OKUNABİLİR ALANLAR (Öğrenciye veri dönerken hata almamak için)
+    # HATA BURADAYDI: Bu iki satırın burada tanımlı olması şart!
+    is_survey_required = serializers.SerializerMethodField()
+    survey_data = serializers.SerializerMethodField()
     
     progress = serializers.SerializerMethodField()
     is_completed = serializers.SerializerMethodField()
@@ -145,9 +154,94 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
             'is_intro_watched', 'materials', 'flashcards', 
             'progress', 'is_completed', 'pre_test_questions',
             'entry_questions', 'is_entry_test_passed',
-            'is_entry_test_required','total_score'
+            'is_entry_test_required','total_score',# BURAYA EKLEMEN GEREKENLER:
+            'is_survey_required', 'survey_data', # Okuma için
+            'survey_questions', 'survey_title', 'has_survey' # Yazma için
         ]
+    # --- YENİ: ANKET GEREKLİ Mİ KONTROLÜ ---
+    # --- 1. ANKET KİLİT MANTIĞI ---
+    def get_is_survey_required(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user or not request.user.is_authenticated:
+            return False
+        
+        # Akademisyen veya personelse anket engeline takılmasınlar
+        if getattr(request.user, 'is_teacher', False) or request.user.is_staff:
+            return False
 
+        from .models import Survey, StudentSurveyResponse
+        # Bu haftaya atanmış bir anket var mı?
+        survey = Survey.objects.filter(week_number=obj.week_number).first()
+        if not survey:
+            return False
+
+        # Öğrenci bu anketi (en az bir sorusunu) yanıtlamış mı?
+        already_answered = StudentSurveyResponse.objects.filter(
+            student=request.user, 
+            question__survey=survey
+        ).exists()
+
+        return not already_answered
+
+    def get_survey_data(self, obj):
+        try:
+            from .models import Survey
+            
+            # 1. Debug: Hangi hafta için anket aranıyor?
+            target_week = obj.week_number
+            print(f"--- ANKET ARAMA BAŞLADI: Hafta {target_week} ---")
+
+            # 2. Sorguyu yap
+            survey = Survey.objects.filter(week_number=target_week).first()
+            
+            if not survey:
+                # DB'de bu hafta numarasıyla eşleşen anket yoksa buraya düşer
+                print(f"--- SONUÇ: Hafta {target_week} için DB'de anket bulunamadı! ---")
+                return None
+
+            print(f"--- SONUÇ: Anket bulundu: {survey.title} (ID: {survey.id}) ---")
+
+            questions_data = []
+            # 3. Soruları çek
+            all_questions = survey.questions.all()
+            print(f"--- SORU SAYISI: {all_questions.count()} ---")
+
+            for q in all_questions:
+                # Dinamik şıkları çekmeye çalış
+                options_list = []
+                
+                # Modellerinde related_name='options' tanımlı olduğunu varsayıyoruz
+                # Eğer değilse q.surveyoption_set.all() denenecek
+                db_opts = getattr(q, 'options', getattr(q, 'surveyoption_set', None))
+                
+                if db_opts:
+                    for opt in db_opts.all():
+                        options_list.append({
+                            "id": opt.id,
+                            "option_text": opt.option_text,
+                            "value": getattr(opt, 'value', 0)
+                        })
+                
+                questions_data.append({
+                    "id": q.id,
+                    "text": q.text,
+                    "category": q.category,
+                    "options": options_list
+                })
+
+            print(f"--- VERİ HAZIR: {len(questions_data)} soru paketlendi. ---")
+            return {
+                "id": survey.id,
+                "title": survey.title,
+                "description": survey.description,
+                "questions": questions_data
+            }
+
+        except Exception as e:
+            print(f"--- KRİTİK HATA: {str(e)} ---")
+            import traceback
+            traceback.print_exc()
+            return None
     # BU METODU EKLE
     def get_is_entry_test_required(self, obj):
         request = self.context.get('request')
@@ -171,7 +265,7 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
         
         # Eğer soru varsa VE çözülmediyse TRUE döner (Yani test istenir)
         return not passed
-
+    
     # --- ÖĞRENCİ İLERLEME VE KİLİT MANTIKLARI (GÜVENLİ) ---
 
     def get_progress(self, obj):
@@ -323,23 +417,44 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
         return self.save_all_content(validated_data)
 
     def update(self, instance, validated_data):
-        return self.save_all_content(validated_data)
+        # save_all_content metodun zaten 'content' nesnesini dönüyor.
+        # Bu nesneyi yakalayıp update metodundan dışarı dönmelisin.
+        instance = self.save_all_content(validated_data)
+        
+        if not instance:
+            # Eğer bir hata olduysa ve nesne dönmediyse DRF hata verir, 
+            # bu yüzden burada bir geri dönüş garantisi olmalı.
+            raise serializers.ValidationError({"error": "Güncelleme sırasında nesne oluşturulamadı."})
+            
+        return instance  # <--- KRİTİK SATIR BURASI!
 
     def save_all_content(self, validated_data):
         """
-        Tüm alt modelleri (Material, Quiz, Question, Flashcard, EntryTest) 
-        ID bazlı koruyarak günceller.
+        Material, Quiz, Flashcard, EntryTest ve özellikle Survey (Anket)
+        modellerini ID bazlı koruyarak günceller.
         """
+        from .models import (
+            WeeklyContent, Material, Quiz, QuizQuestion, QuizOption, 
+            Flashcard, WeeklyPreTestQuestion, WeeklyPreTestOption,
+            Survey, SurveyQuestion, SurveyOption
+        )
+        
+        # 1. Verileri Frontend'den gelen Key'lere göre ayıkla
         mats_data = validated_data.pop('materials', None)
         cards_data = validated_data.pop('flashcards', None)
-        pre_test_data = validated_data.pop('pre_test_questions', None)
         entry_questions_data = validated_data.pop('entry_questions', None)
+        
+        # ANKET VERİLERİ (Senin gönderdiğin yapıya göre)
+       # ANKET VERİLERİ (Senin gönderdiğin yapıya tam uyumlu)
+        survey_questions_list = validated_data.pop('survey_questions', None)
+        s_title = validated_data.pop('survey_title', None)
+        has_survey_flag = validated_data.pop('has_survey', False)
         
         w_num = validated_data.get('week_number')
 
         try:
             with transaction.atomic():
-                # 1. HAFTA ANA BİLGİLERİNİ GÜNCELLE
+                # 2. HAFTA ANA BİLGİLERİNİ GÜNCELLE
                 content, _ = WeeklyContent.objects.update_or_create(
                     week_number=w_num,
                     defaults={
@@ -352,112 +467,186 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
                     }
                 )
 
-                # 2. MATERYALLER (ID Koruma & CASCADE Önleme)
-                if mats_data is not None:
-                    if len(mats_data) > 0:
-                        keep_mat_ids = []
-                        for m_item in mats_data:
-                            if not m_item.get('title'): continue
-                            q_data = m_item.pop('quiz', None)
-                            m_id = m_item.get('id')
+                # 3. ANKET (SURVEY) KAYIT MANTIĞI
+                # 'has_survey_flag' artık yukarıda tanımlandığı için hata vermez
+                # ... save_all_content içi ...
 
-                            if m_id:
-                                # Physical Update: CASCADE silinmesini engeller
-                                Material.objects.filter(id=m_id).update(**m_item)
-                                mat_obj = Material.objects.get(id=m_id)
-                            else:
-                                mat_obj = Material.objects.create(parent_content=content, **m_item)
+            # --- 3. ANKET (SURVEY) KAYIT MANTIĞI ---
+                # --- 3. ANKET (SURVEY) KAYIT MANTIĞI ---
+                # --- 3. ANKET (SURVEY) KAYIT MANTIĞI ---
+                if has_survey_flag:
+                    survey_questions_list = validated_data.get('survey_questions') or self.initial_data.get('survey_questions')
+                    s_title = validated_data.get('survey_title') or self.initial_data.get('survey_title')
+                    # Sadece liste doluysa veya null değilse işlem yap
+                    if survey_questions_list:
+                        survey_obj, _ = Survey.objects.update_or_create(
+                            week_number=w_num,
+                            defaults={
+                                'title': s_title if (s_title and str(s_title) != str(w_num)) else f"Hafta {w_num} Ölçeği",
+                                'description': f"{w_num}. Hafta Bilimsel Ölçeği"
+                            }
+                        )
+                        keep_survey_q_ids = []
+                        print(f"DEBUG: Hafta {w_num} için gelen soru sayısı: {len(survey_questions_list)}")
+                        for s_q in survey_questions_list:
+                            print(f"DEBUG: Soru: {s_q.get('text')} - Şık Sayısı: {len(s_q.get('options', []))}")
+                            s_q_text = s_q.get('text')
+                            if not s_q_text:
+                                continue
                             
-                            keep_mat_ids.append(mat_obj.id)
-
-                            # SINAV (QUIZ) MANTIĞI
-                            if mat_obj.content_type == 'form' and q_data:
-                                quiz_instance, _ = Quiz.objects.update_or_create(
-                                    material=mat_obj,
-                                    defaults={'title': q_data.get('title', 'Haftalık Test'), 'description': q_data.get('description', '')}
-                                )
-                                q_list = q_data.pop('questions', [])
-                                keep_q_ids = []
-                                for idx, q_val in enumerate(q_list):
-                                    if not q_val.get('question_text'): continue
-                                    o_list = q_val.pop('options', [])
-                                    q_id = q_val.get('id')
-                                    question_obj, _ = QuizQuestion.objects.update_or_create(
-                                        quiz=quiz_instance, id=q_id if q_id else None,
-                                        defaults={'question_text': q_val.get('question_text'), 'order': idx, 'explanation': q_val.get('explanation', '')}
-                                    )
-                                    keep_q_ids.append(question_obj.id)
-                                    for o_val in o_list:
-                                        if o_val.get('option_text'):
-                                            o_id = o_val.pop('id', None)
-                                            QuizOption.objects.update_or_create(question=question_obj, id=o_id if o_id else None, defaults=o_val)
-                                if keep_q_ids:
-                                    quiz_instance.questions.exclude(id__in=keep_q_ids).delete()
-
-                        if keep_mat_ids:
-                            content.materials.exclude(id__in=keep_mat_ids).delete()
-
-                # 3. FLASHCARDLAR (Özel Serializer'ın yoksa burası ID korumalı olmalı)
-                if cards_data is not None:
-                    if len(cards_data) > 0:
-                        keep_card_ids = []
-                        for idx, c_item in enumerate(cards_data):
-                            if not c_item.get('question'): continue
-                            c_id = c_item.get('id')
-                            card_obj, _ = Flashcard.objects.update_or_create(
-                                weekly_content=content,
-                                id=c_id if c_id else None,
-                                defaults={'question': c_item.get('question'), 'answer': c_item.get('answer'), 'order': idx}
-                            )
-                            keep_card_ids.append(card_obj.id)
-                        if keep_card_ids:
-                            content.flashcards.exclude(id__in=keep_card_ids).delete()
-
-                # 4. ENTRY QUESTIONS (Haftalık Giriş Testi)
-                if entry_questions_data is not None:
-                    if len(entry_questions_data) > 0:
-                        keep_entry_ids = []
-                        for eq_idx, eq_item in enumerate(entry_questions_data):
-                            if not eq_item.get('question_text'): continue
-                            eq_id = eq_item.get('id')
-                            
-                            # --- BURAYI DÜZELTTİK ---
-                            t_week_num = eq_item.get('target_week')
-                            target_week_obj = None
-                            if t_week_num:
-                                try:
-                                    # Numaradan gerçek objeyi (ID'yi) buluyoruz
-                                    target_week_obj = WeeklyContent.objects.get(week_number=int(t_week_num))
-                                except (WeeklyContent.DoesNotExist, ValueError):
-                                    # Eğer 2 numaralı hafta yoksa, varsayılan olarak 1. haftayı veya None ata
-                                    target_week_obj = WeeklyContent.objects.filter(week_number=1).first()
-                            # -------------------------
-
-                            eq_opts = eq_item.pop('options', [])
-                            entry_q, _ = WeeklyPreTestQuestion.objects.update_or_create(
-                                id=eq_id if eq_id else None,
+                            s_q_id = s_q.get('id')
+                            # Soruyu Kaydet/Güncelle
+                            survey_question_obj, _ = SurveyQuestion.objects.update_or_create(
+                                survey=survey_obj,
+                                id=s_q_id if (s_q_id and str(s_q_id).isdigit()) else None,
                                 defaults={
-                                    'appearing_week': content, 
-                                    'target_week': target_week_obj, # <--- ARTIK SAYI DEĞİL, OBJE GİDİYOR
-                                    'question_text': eq_item.get('question_text'), 
-                                    'order': eq_idx
+                                    'text': s_q_text,
+                                    'category': s_q.get('category', '')
                                 }
                             )
-                            keep_entry_ids.append(entry_q.id)
-                            # Seçenekler (Options) kısmı aynı kalabilir...
-                            for eo in eq_opts:
-                                if eo.get('option_text'):
-                                    eo_id = eo.pop('id', None)
-                                    WeeklyPreTestOption.objects.update_or_create(
-                                        question=entry_q, 
-                                        id=eo_id if eo_id else None, 
-                                        defaults=eo
-                                    )
+                            current_q_id = survey_question_obj.id
+                            keep_survey_q_ids.append(current_q_id)
+
+                            # --- ŞIKLARI (OPTIONS) DİNAMİK OLARAK KAYDET ---
+                            s_o_list = s_q.get('options', [])
+                            print(f"--- DEBUG: Soru: {s_q_text[:20]} ---")
+                            print(f"--- DEBUG: s_o_list Tipi: {type(s_o_list)}")
+                            print(f"--- DEBUG: s_o_list İÇERİK: {s_o_list}")
+                            keep_survey_o_ids = []
+                            
+                            for s_o in s_o_list:
+                                o_text = s_o.get('option_text')
+                                o_val = s_o.get('value')
+
+                                print(f"   -> İşleniyor: {o_text} (Değer: {o_val})")
+                                
+                                if not o_text:
+                                    continue
+                                
+                                s_o_id = s_o.get('id')
+                                survey_option_obj, _ = SurveyOption.objects.update_or_create(
+                                    question=survey_question_obj,
+                                    id=s_o_id if (s_o_id and str(s_o_id).isdigit()) else None,
+                                    defaults={
+                                        'option_text': str(o_text).strip(),
+                                        'value': int(o_val) if o_val is not None else 0
+                                    }
+                                )
+                                keep_survey_o_ids.append(survey_option_obj.id)
+                                print(f"      [TAMAM] DB ID: {survey_option_obj.id} | Metin: {o_text}")
+                            
+                            # Soruya ait eski/gereksiz şıkları sil
+                            survey_question_obj.options.exclude(id__in=keep_survey_o_ids).delete()
+
+                        # Ankete ait ama artık listede olmayan soruları sil
+                        survey_obj.questions.exclude(id__in=keep_survey_q_ids).delete()
+                
+                else:
+                    # has_survey_flag False ise anketi veritabanından kaldır
+                    Survey.objects.filter(week_number=w_num).delete()
+                    print("      [UYARI] Bu sorunun options listesi BOŞ veya HATALI geliyor!")
+
+                # 4. MATERYALLER VE QUIZLER
+                if mats_data is not None:
+                    keep_mat_ids = []
+                    for m_item in mats_data:
+                        if not m_item.get('title'): continue
+                        q_data = m_item.pop('quiz', None)
+                        m_id = m_item.get('id')
+
+                        if m_id and str(m_id).isdigit():
+                            Material.objects.filter(id=m_id).update(**m_item)
+                            mat_obj = Material.objects.get(id=m_id)
+                        else:
+                            mat_obj = Material.objects.create(parent_content=content, **m_item)
+                        
+                        keep_mat_ids.append(mat_obj.id)
+
+                        if mat_obj.content_type == 'form' and q_data:
+                            quiz_instance, _ = Quiz.objects.update_or_create(
+                                material=mat_obj,
+                                defaults={'title': q_data.get('title', 'Haftalık Test'), 'description': q_data.get('description', '')}
+                            )
+                            quiz_qs = q_data.pop('questions', [])
+                            keep_quiz_q_ids = []
+                            for idx, q_val in enumerate(quiz_qs):
+                                if not q_val.get('question_text'): continue
+                                o_list = q_val.pop('options', [])
+                                q_id = q_val.get('id')
+                                q_obj, _ = QuizQuestion.objects.update_or_create(
+                                    quiz=quiz_instance, id=q_id if q_id and str(q_id).isdigit() else None,
+                                    defaults={'question_text': q_val.get('question_text'), 'order': idx, 'explanation': q_val.get('explanation', '')}
+                                )
+                                keep_quiz_q_ids.append(q_obj.id)
+                                for o_val in o_list:
+                                    if o_val.get('option_text'):
+                                        o_id = o_val.pop('id', None)
+                                        QuizOption.objects.update_or_create(question=q_obj, id=o_id if o_id and str(o_id).isdigit() else None, defaults=o_val)
+                            
+                            if keep_quiz_q_ids:
+                                quiz_instance.questions.exclude(id__in=keep_quiz_q_ids).delete()
+
+                    if keep_mat_ids:
+                        content.materials.exclude(id__in=keep_mat_ids).delete()
+
+                # 5. FLASHCARDLAR
+                if cards_data is not None:
+                    keep_card_ids = []
+                    for idx, c_item in enumerate(cards_data):
+                        if not c_item.get('question'): continue
+                        c_id = c_item.get('id')
+                        card_obj, _ = Flashcard.objects.update_or_create(
+                            weekly_content=content,
+                            id=c_id if c_id and str(c_id).isdigit() else None,
+                            defaults={'question': c_item.get('question'), 'answer': c_item.get('answer'), 'order': idx}
+                        )
+                        keep_card_ids.append(card_obj.id)
+                    if keep_card_ids:
+                        content.flashcards.exclude(id__in=keep_card_ids).delete()
+
+                # 6. GİRİŞ TESTİ (ENTRY QUESTIONS)
+                if entry_questions_data is not None:
+                    keep_entry_ids = []
+                    for eq_idx, eq_item in enumerate(entry_questions_data):
+                        if not eq_item.get('question_text'): continue
+                        eq_id = eq_item.get('id')
+                        
+                        t_week_num = eq_item.get('target_week')
+                        target_week_obj = None
+                        if t_week_num:
+                            try:
+                                target_week_obj = WeeklyContent.objects.get(week_number=int(t_week_num))
+                            except (WeeklyContent.DoesNotExist, ValueError):
+                                target_week_obj = WeeklyContent.objects.filter(week_number=1).first()
+
+                        eq_opts = eq_item.pop('options', [])
+                        entry_q, _ = WeeklyPreTestQuestion.objects.update_or_create(
+                            id=eq_id if eq_id and str(eq_id).isdigit() else None,
+                            defaults={
+                                'appearing_week': content, 
+                                'target_week': target_week_obj,
+                                'question_text': eq_item.get('question_text'), 
+                                'order': eq_idx
+                            }
+                        )
+                        keep_entry_ids.append(entry_q.id)
+                        for eo in eq_opts:
+                            if eo.get('option_text'):
+                                eo_id = eo.pop('id', None)
+                                WeeklyPreTestOption.objects.update_or_create(
+                                    question=entry_q, id=eo_id if eo_id and str(eo_id).isdigit() else None, defaults=eo
+                                )
+                    if keep_entry_ids:
+                        WeeklyPreTestQuestion.objects.filter(appearing_week=content).exclude(id__in=keep_entry_ids).delete()
 
                 return content
+            
+            print("--- TÜM KAYITLAR TAMAMLANDI, COMMIT EDİLİYOR ---")
 
         except Exception as e:
             print(f"DEBUG: Kayıt Hatası -> {str(e)}")
+            import traceback
+            traceback.print_exc()
             raise serializers.ValidationError({"error": str(e)})
     
 
@@ -705,4 +894,55 @@ class BadgeStatusSerializer(serializers.ModelSerializer):
             return earned.earned_at if earned else None
         return None
 
-    
+from rest_framework import serializers
+from .models import Survey, SurveyQuestion, SurveyOption, StudentSurveyResponse
+
+# 1. Şıklar İçin Serializer (Dinamik metinler için şart)
+class SurveyOptionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SurveyOption
+        fields = ['id', 'option_text', 'value']
+
+# 2. Sorular İçin Serializer (Şıkları da içermeli)
+class SurveyQuestionSerializer(serializers.ModelSerializer):
+    # 'options' ismi SurveyQuestion modelindeki related_name ile aynı olmalı
+    options = SurveyOptionSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = SurveyQuestion
+        fields = ['id', 'text', 'category', 'options']
+
+# 3. Anket Ana Serializer (Soruları ve Şıkları frontend'e taşır)
+class SurveySerializer(serializers.ModelSerializer):
+    # 'questions' ismi Survey modelindeki related_name ile aynı olmalı
+    questions = SurveyQuestionSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Survey
+        fields = ['id', 'title', 'description', 'week_number', 'questions']
+
+    def create(self, validated_data):
+        # NOT: Akademisyen panelinde 'save_all_content' kullandığın için 
+        # bu metod genellikle manuel kayıtlar için yedektir.
+        questions_data = validated_data.pop('questions', [])
+        survey = Survey.objects.create(**validated_data)
+        for q_data in questions_data:
+            SurveyQuestion.objects.create(survey=survey, **q_data)
+        return survey
+
+# 4. Öğrenci Cevap Gönderim Serializer
+class SurveyResponseSubmitSerializer(serializers.Serializer):
+    question_id = serializers.IntegerField()
+    answer_value = serializers.IntegerField(min_value=1, max_value=5)
+
+# 5. Akademisyen Paneli Raporlama Serializer (Sayı değil metin döner)
+class AcademicSurveyResultSerializer(serializers.ModelSerializer):
+    student_name = serializers.CharField(source='student.get_full_name', read_only=True)
+    department = serializers.CharField(source='student.department', read_only=True)
+    question_text = serializers.CharField(source='question.text', read_only=True)
+    # BURASI KRİTİK: 'answer_value' yerine modelde sakladığımız 'answer_text'i dönüyoruz
+    answer = serializers.CharField(source='answer_text', read_only=True)
+
+    class Meta:
+        model = StudentSurveyResponse
+        fields = ['student_name', 'department', 'question_text', 'answer', 'created_at']
