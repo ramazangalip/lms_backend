@@ -102,17 +102,23 @@ class WeeklyContentView(APIView):
 
     def post(self, request):
         """Akademisyen Paneli: İçerik Güncelleme, Soru Ekleme ve Anket Kaydı"""
+        # 1. Yetki Kontrolü
         if not getattr(request.user, 'is_teacher', False) and not request.user.is_staff:
             return Response({"error": "Yetkiniz bulunmamaktadır."}, status=status.HTTP_403_FORBIDDEN)
 
+        # 2. Hafta Numarası Kontrolü
         week_number = request.data.get('week_number')
         if not week_number:
             return Response({"error": "Hafta numarası belirtilmelidir."}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             with transaction.atomic():
-                # 1. HAFTALIK İÇERİĞİ KAYDET/GÜNCELLE
+                # 3. Mevcut İçeriği Getir (Varsa)
                 content_instance = WeeklyContent.objects.filter(week_number=week_number).first()
+                
+                # 4. Serializer'ı Çalıştır
+                # NOT: survey_questions, survey_title ve has_survey verileri 
+                # request.data içinde olduğu için Serializer bunları otomatik işleyecek.
                 serializer = WeeklyContentSerializer(
                     content_instance, 
                     data=request.data, 
@@ -121,40 +127,13 @@ class WeeklyContentView(APIView):
                 )
 
                 if serializer.is_valid():
+                    # Serializer içindeki update() ve dolayısıyla save_all_content() tetiklenir.
+                    # Senin yazdığın o detaylı şık koruma mantığı burada devreye girer.
                     serializer.save()
                     
-                    # --- 2. ANKET (SURVEY) VE SORULARI KAYDETME MANTIĞI ---
-                    has_survey = request.data.get('has_survey', False)
-                    survey_title = request.data.get('survey_title')
-                    survey_questions_data = request.data.get('survey_questions', [])
-
-                    if has_survey and survey_title:
-                        from .models import Survey, SurveyQuestion
-                        # Anketi oluştur veya güncelle
-                        survey_obj, created = Survey.objects.update_or_create(
-                            week_number=week_number,
-                            defaults={
-                                'title': survey_title,
-                                'description': f"{week_number}. Hafta Bilimsel Ölçeği"
-                            }
-                        )
-                        
-                        # Mevcut soruları temizle ve yenilerini ekle (En temiz güncelleme yolu)
-                        survey_obj.questions.all().delete()
-                        for q_data in survey_questions_data:
-                            SurveyQuestion.objects.create(
-                                survey=survey_obj,
-                                text=q_data.get('text'),
-                                category=q_data.get('category', '')
-                            )
-                    else:
-                        # Eğer has_survey False gönderildiyse o haftanın anketini sistemden kaldır
-                        from .models import Survey
-                        Survey.objects.filter(week_number=week_number).delete()
-
                     return Response(serializer.data, status=status.HTTP_201_CREATED)
                 
-                # Hata durumunda loglama
+                # Geçersiz veri durumunda hata logla
                 print(f"Validation Errors: {serializer.errors}")
                 return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 

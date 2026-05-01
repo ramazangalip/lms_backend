@@ -474,77 +474,84 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
             # --- 3. ANKET (SURVEY) KAYIT MANTIĞI ---
                 # --- 3. ANKET (SURVEY) KAYIT MANTIĞI ---
                 # --- 3. ANKET (SURVEY) KAYIT MANTIĞI ---
-                if has_survey_flag:
-                    survey_questions_list = validated_data.get('survey_questions') or self.initial_data.get('survey_questions')
-                    s_title = validated_data.get('survey_title') or self.initial_data.get('survey_title')
-                    # Sadece liste doluysa veya null değilse işlem yap
-                    if survey_questions_list:
-                        survey_obj, _ = Survey.objects.update_or_create(
-                            week_number=w_num,
+            if has_survey_flag:
+            # DİKKAT: pop ile sildiysen buradan tekrar get ile alamazsın. 
+            # Yukarıda tanımladığın değişkeni kullanmalısın.
+                if not survey_questions_list:
+                    survey_questions_list = self.initial_data.get('survey_questions', [])
+
+                if survey_questions_list:
+                    survey_obj, _ = Survey.objects.update_or_create(
+                        week_number=w_num,
+                        defaults={
+                            'title': s_title if (s_title and str(s_title) != str(w_num)) else f"Hafta {w_num} Ölçeği",
+                            'description': f"{w_num}. Hafta Bilimsel Ölçeği"
+                        }
+                    )
+                    
+                    keep_survey_q_ids = []
+                    for s_q in survey_questions_list:
+                        s_q_text = s_q.get('text')
+                        if not s_q_text: continue
+                        
+                        # Soruyu ID yoksa metin üzerinden bulmaya çalış (Oracle dostu yöntem)
+                        s_q_id = s_q.get('id')
+                        survey_question_obj, _ = SurveyQuestion.objects.update_or_create(
+                            survey=survey_obj,
+                            id=s_q_id if (s_q_id and str(s_q_id).isdigit()) else None,
                             defaults={
-                                'title': s_title if (s_title and str(s_title) != str(w_num)) else f"Hafta {w_num} Ölçeği",
-                                'description': f"{w_num}. Hafta Bilimsel Ölçeği"
+                                'text': s_q_text,
+                                'category': s_q.get('category', '')
                             }
                         )
-                        keep_survey_q_ids = []
-                        print(f"DEBUG: Hafta {w_num} için gelen soru sayısı: {len(survey_questions_list)}")
-                        for s_q in survey_questions_list:
-                            print(f"DEBUG: Soru: {s_q.get('text')} - Şık Sayısı: {len(s_q.get('options', []))}")
-                            s_q_text = s_q.get('text')
-                            if not s_q_text:
-                                continue
-                            
-                            s_q_id = s_q.get('id')
-                            # Soruyu Kaydet/Güncelle
-                            survey_question_obj, _ = SurveyQuestion.objects.update_or_create(
-                                survey=survey_obj,
-                                id=s_q_id if (s_q_id and str(s_q_id).isdigit()) else None,
-                                defaults={
-                                    'text': s_q_text,
-                                    'category': s_q.get('category', '')
-                                }
-                            )
-                            current_q_id = survey_question_obj.id
-                            keep_survey_q_ids.append(current_q_id)
+                        keep_survey_q_ids.append(survey_question_obj.id)
 
-                            # --- ŞIKLARI (OPTIONS) DİNAMİK OLARAK KAYDET ---
-                            s_o_list = s_q.get('options', [])
-                            print(f"--- DEBUG: Soru: {s_q_text[:20]} ---")
-                            print(f"--- DEBUG: s_o_list Tipi: {type(s_o_list)}")
-                            print(f"--- DEBUG: s_o_list İÇERİK: {s_o_list}")
-                            keep_survey_o_ids = []
-                            
-                            for s_o in s_o_list:
-                                o_text = s_o.get('option_text')
-                                o_val = s_o.get('value')
+                        # --- ŞIKLARI KAYDET (KRİTİK DÜZELTME) ---
+                        s_o_list = s_q.get('options', [])
+                        keep_survey_o_ids = []
+                        
+                        # serializers.py içinde bul ve değiştir:
+                        # --- ŞIKLARI (OPTIONS) KAYDETME DÖNGÜSÜ ---
+                        # --- ŞIKLARI (OPTIONS) KAYDETME DÖNGÜSÜ ---
+                    for s_o in s_o_list:
+                        o_text = s_o.get('option_text')
+                        o_val = s_o.get('value')
+                        s_o_id = s_o.get('id')
 
-                                print(f"   -> İşleniyor: {o_text} (Değer: {o_val})")
-                                
-                                if not o_text:
-                                    continue
-                                
-                                s_o_id = s_o.get('id')
-                                survey_option_obj, _ = SurveyOption.objects.update_or_create(
-                                    question=survey_question_obj,
-                                    id=s_o_id if (s_o_id and str(s_o_id).isdigit()) else None,
-                                    defaults={
-                                        'option_text': str(o_text).strip(),
-                                        'value': int(o_val) if o_val is not None else 0
-                                    }
-                                )
-                                keep_survey_o_ids.append(survey_option_obj.id)
-                                print(f"      [TAMAM] DB ID: {survey_option_obj.id} | Metin: {o_text}")
-                            
-                            # Soruya ait eski/gereksiz şıkları sil
-                            survey_question_obj.options.exclude(id__in=keep_survey_o_ids).delete()
+                        # KRİTİK DÜZELTME: Metin boş geliyorsa DB'deki mevcut kaydı koruma altına al
+                        if not o_text or str(o_text).strip() == "":
+                            # Veritabanında bu soruya ait ve bu değere (1,2,3..) sahip kayıt var mı bak
+                            existing_opt = SurveyOption.objects.filter(question=survey_question_obj, value=o_val).first()
+                            if existing_opt:
+                                # Varsa ID'sini koruma listesine ekle ki en alttaki .delete() onu silmesin
+                                keep_survey_o_ids.append(existing_opt.id)
+                                print(f"      [KORUNDU] Puan {o_val} metni boş, mevcut DB kaydı silinmemesi için listeye alındı.")
+                            continue 
 
-                        # Ankete ait ama artık listede olmayan soruları sil
-                        survey_obj.questions.exclude(id__in=keep_survey_q_ids).delete()
-                
+                        # Eğer metin doluysa her zamanki gibi güncelle veya oluştur
+                        survey_option_obj, _ = SurveyOption.objects.update_or_create(
+                            question=survey_question_obj,
+                            value=o_val, 
+                            defaults={
+                                'option_text': str(o_text).strip()
+                            }
+                        )
+                        keep_survey_o_ids.append(survey_option_obj.id)
+
+                    # KRİTİK DOKUNUŞ: Sadece listede eleman varsa temizlik yap (boş liste gelirse silmeyi engelle)
+                    if keep_survey_o_ids:
+                        survey_question_obj.options.exclude(id__in=keep_survey_o_ids).delete()
+                        
+                        # Gereksiz şıkları temizle
+                 
+
+                    # Gereksiz soruları temizle
+                    survey_obj.questions.exclude(id__in=keep_survey_q_ids).delete()
+                    
                 else:
-                    # has_survey_flag False ise anketi veritabanından kaldır
-                    Survey.objects.filter(week_number=w_num).delete()
-                    print("      [UYARI] Bu sorunun options listesi BOŞ veya HATALI geliyor!")
+                        # has_survey_flag False ise anketi veritabanından kaldır
+                        Survey.objects.filter(week_number=w_num).delete()
+                        print("      [UYARI] Bu sorunun options listesi BOŞ veya HATALI geliyor!")
 
                 # 4. MATERYALLER VE QUIZLER
                 if mats_data is not None:
