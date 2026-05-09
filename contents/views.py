@@ -21,6 +21,7 @@ from google.oauth2 import service_account
 import os
 import json
 from rest_framework import status, permissions
+from rest_framework.pagination import PageNumberPagination
 
 # --- YARDIMCI FONKSİYONLAR ---
 
@@ -424,6 +425,11 @@ from .models import *
 
 User = get_user_model()
 
+class StudentAnalyticsPagination(PageNumberPagination):
+    page_size = 10  # Her sayfada 10 öğrenci gösterilir
+    page_size_query_param = 'page_size'
+    max_page_size = 50
+
 class StudentAnalyticsView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -432,46 +438,41 @@ class StudentAnalyticsView(APIView):
         is_teacher = getattr(request.user, 'is_teacher', False) or request.user.is_staff
         department_param = request.query_params.get('department')
 
-        # 2. FİLTRELEME MANTIĞI
+        # 2. FİLTRELEME MANTIĞI (Bölüm bazlı filtreleme korunuyor)
         if is_teacher:
-            # EĞER HOCAYSA: Bölüm parametresi zorunlu
             if not department_param or department_param == 'all':
                 return Response(
                     {"error": "Analiz verileri için bölüm seçimi zorunludur."}, 
                     status=status.HTTP_400_BAD_REQUEST
                 )
-            # Seçili bölümdeki tüm öğrencileri getir
-            students = User.objects.filter(
+            queryset = User.objects.filter(
                 department=department_param, 
                 is_staff=False,
                 is_teacher=False 
             ).order_by('first_name')
         else:
-            # EĞER ÖĞRENCİYSE: Sadece kendi verisini getir
-            students = User.objects.filter(id=request.user.id)
+            queryset = User.objects.filter(id=request.user.id)
 
-        # Eğer sonuçta hiç öğrenci yoksa (boş sınıf vb.) boş dön
-        if not students.exists():
+        # --- SAYFALANDIRMA BAŞLANGICI ---
+        paginator = StudentAnalyticsPagination()
+        paginated_students = paginator.paginate_queryset(queryset, request)
+        
+        if not paginated_students:
             return Response([], status=status.HTTP_200_OK)
 
-        student_ids = list(students.values_list('id', flat=True))
+        # Sadece bu sayfadaki öğrencilerin ID'lerini alarak toplu veri çekiyoruz (RAM dostu)
+        student_ids = [s.id for s in paginated_students]
+        # --- SAYFALANDIRMA BİTİŞİ ---
 
-        # 3. TOPLU VERİ ÇEKME (N+1 problemini önlemek için optimize edildi)
+        # 3. TOPLU VERİ ÇEKME (Sadece sayfadaki 10 öğrenci için optimize edildi)
         all_time_tracking = list(TimeTracking.objects.filter(student_id__in=student_ids).select_related('weekly_content'))
-        
-        # Quiz denemelerini ve cevapları topluca çekiyoruz
         all_attempts = list(StudentQuizAttempt.objects.filter(student_id__in=student_ids).select_related('quiz__material__parent_content'))
-        
-        # KRİTİK: Tüm cevapları ve ilgili soruların analizlerini (explanation) tek seferde çekiyoruz
         all_answers = list(StudentAnswer.objects.filter(
             attempt__student_id__in=student_ids
         ).select_related('question', 'selected_option', 'attempt'))
-
         all_progress = list(StudentProgress.objects.filter(student_id__in=student_ids).select_related('weekly_content'))
         all_pre_tests = {pt.student_id: pt for pt in PreTestResult.objects.filter(student_id__in=student_ids)}
         all_questions = list(StudentQuestion.objects.filter(student_id__in=student_ids).select_related('weekly_content'))
-        
-        # Doğru seçenekleri belleğe al (Sorgu yükünü azaltmak için)
         all_correct_options = {
             opt.question_id: opt.option_text 
             for opt in QuizOption.objects.filter(is_correct=True)
@@ -479,7 +480,7 @@ class StudentAnalyticsView(APIView):
 
         # 4. VERİLERİ HARİTALAMA
         final_data = []
-        for student in students:
+        for student in paginated_students:
             s_times = [t for t in all_time_tracking if t.student_id == student.id]
             s_attempts = [a for a in all_attempts if a.student_id == student.id]
             s_progress = [p for p in all_progress if p.student_id == student.id]
@@ -487,6 +488,7 @@ class StudentAnalyticsView(APIView):
             s_pre_test = all_pre_tests.get(student.id)
 
             weekly_stats = []
+            # 14 haftalık veriyi işleme
             for i in range(1, 15):
                 dur_1 = sum(t.duration_seconds for t in s_times if t.weekly_content and t.weekly_content.week_number == i and t.attempt_round == 1)
                 dur_2 = sum(t.duration_seconds for t in s_times if t.weekly_content and t.weekly_content.week_number == i and t.attempt_round == 2)
@@ -497,13 +499,10 @@ class StudentAnalyticsView(APIView):
                 prog_rec = next((p for p in s_progress if p.weekly_content and p.weekly_content.week_number == i), None)
                 week_qs = [q.question_text for q in s_questions if q.weekly_content and q.weekly_content.week_number == i]
 
-                # --- QUIZ SONUÇ ANALİZİ (GÜNCELLENEN KISIM) ---
                 quiz_results = []
-                # En son yapılan denemeyi baz al (Tur 2 varsa onu, yoksa Tur 1'i getir)
                 last_attempt = att_2 if att_2 else att_1
                 
                 if last_attempt:
-                    # Bellekteki cevaplar içinden bu denemeye ait olanları süz
                     s_answers = [ans for ans in all_answers if ans.attempt_id == last_attempt.id]
                     for ans in s_answers:
                         quiz_results.append({
@@ -511,7 +510,6 @@ class StudentAnalyticsView(APIView):
                             "selected_option": ans.selected_option.option_text,
                             "correct_option": all_correct_options.get(ans.question_id, "Belirtilmemiş"),
                             "is_correct": ans.is_correct,
-                            # Veritabanındaki hazır analizi buraya ekliyoruz
                             "explanation": ans.question.explanation if ans.question.explanation else "Bu soru için analiz hazırlanmamış."
                         })
 
@@ -528,7 +526,7 @@ class StudentAnalyticsView(APIView):
                     "correct_2": att_2.correct_answers if att_2 else 0,
                     "wrong_2": att_2.wrong_answers if att_2 else 0,
                     "questions": week_qs,
-                    "quiz_results": quiz_results  # Artık içi dolu ve analizli
+                    "quiz_results": quiz_results 
                 })
 
             overall_progress = sum(w['progress'] for w in weekly_stats) / 14 if weekly_stats else 0
@@ -553,7 +551,8 @@ class StudentAnalyticsView(APIView):
                 } if s_pre_test else None
             })
 
-        return Response(final_data, status=status.HTTP_200_OK)
+        # --- 5. SAYFALANDIRILMIŞ YANIT DÖNÜŞÜ ---
+        return paginator.get_paginated_response(final_data)
 
 # --- YAPAY ZEKA SOHBET ---
 
