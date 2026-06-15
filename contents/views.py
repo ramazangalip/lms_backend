@@ -1208,29 +1208,52 @@ class SurveyDetailView(APIView):
         except Exception as e:
             return Response({"error": f"Sunucu hatası: {str(e)}"}, status=500)
 
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from rest_framework import permissions
+
 class AcademicSurveyAnalyticsView(APIView):
     permission_classes = [permissions.IsAdminUser] # Sadece Akademisyen/Admin
 
     def get(self, request):
-        # Bölüm bazlı ve anket bazlı filtreleme
         dept = request.query_params.get('department')
-        survey_id = request.query_params.get('survey_id')
+        survey_id = request.query_params.get('survey_id') # Frontend'den gelen hafta numarasıdır
         
-        responses = StudentSurveyResponse.objects.all()
+        # Sadece 4. hafta ve sonrasındaki anketlerin yanıtlarını çekiyoruz
+        responses = StudentSurveyResponse.objects.select_related('student', 'question__survey').filter(
+            question__survey__week_number__gte=4
+        )
         
+        # Filtreleri uygula
         if dept:
             responses = responses.filter(student__department=dept)
-        if survey_id:
-            responses = responses.filter(question__survey_id=survey_id)
+        if survey_id and survey_id != 'all':
+            responses = responses.filter(question__survey__week_number=survey_id)
             
-        # Basit bir raporlama formatı
+        # Orijinal Ölçek Sabitleri (Veritabanındaki null verileri tamir etmek için koruma kalkanı)
+        scale_map = {
+            1: "Hiçbir zaman",
+            2: "Ender olarak",
+            3: "Bazen",
+            4: "Sıklıkla",
+            5: "Her zaman"
+        }
+            
         report = []
         for r in responses:
+            db_text = r.answer_text
+            # Gelen verinin boş string, None veya string "null" olup olmadığını denetliyoruz
+            is_valid = db_text and str(db_text).strip() and str(db_text).lower() != 'null'
+            
+            # Eğer veri bozuksa veya boşsa puana göre ölçek karşılığını veriyoruz
+            final_text = db_text if is_valid else scale_map.get(r.answer_value, f"{r.answer_value} Puan")
+
             report.append({
-                "student": r.student.get_full_name(),
-                "question": r.question.text,
-                "answer": r.answer_value,
-                "category": r.question.category
+                "student": r.student.get_full_name() if r.student else "Bilinmeyen Öğrenci",
+                "question": r.question.text if r.question else "Soru Maddesi Yok",
+                "answer": r.answer_value,  # Grafik motoru için sayısal değer (1-5)
+                "answer_text": final_text,  # Frontend'in parantez içine basacağı garantili temiz metin
+                "category": r.question.category if r.question.category else "Genel"
             })
+            
         return Response(report)
-    
