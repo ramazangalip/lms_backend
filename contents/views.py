@@ -1277,3 +1277,55 @@ class AcademicSurveyAnalyticsView(APIView):
             })
             
         return Response(report)
+
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from rest_framework import permissions
+from django.db.models import Sum, Value, CharField, FloatField
+from django.db.models.functions import Concat, Cast
+from django.contrib.auth import get_user_model
+
+# Senin modellerinin imports alanları (Dosya yoluna göre revize edebilirsin)
+from .models import TimeTracking 
+
+User = get_user_model()
+
+class StudentTimeAnalyticsView(APIView):
+    permission_classes = [permissions.IsAdminUser] # Sadece Akademisyen/Admin görebilir
+
+    def get(self, request):
+        dept = request.query_params.get('department')
+        
+        # Öğrencilerin TimeTracking log veritabanını filtrele
+        logs = TimeTracking.objects.all()
+        
+        if dept:
+            logs = logs.filter(student__department=dept)
+            
+        # --- N+1 QUERY ENGELLİ SÜPER OPTİMİZASYON ALANI ---
+        # duration_seconds alanını topluyoruz (Sum) ve veritabanı düzeyinde 3600'e bölerek Saate çeviriyoruz.
+        # values() kullanarak Django'nun ağır model instance'larını belleğe yüklemeden hafif JSON datası üretiyoruz.
+        time_reports = logs.values('student').annotate(
+            full_name=Concat(
+                'student__first_name', Value(' '), 'student__last_name',
+                output_field=CharField()
+            ),
+            department_name=Cast('student__department', CharField()), # Bölüm string veya ilişki ise uyum sağlar
+            total_hours=Sum(Cast('duration_seconds', FloatField())) / 3600.0
+        ).order_by('-total_hours') # En çok süre geçirenden en aza doğru sıralama
+
+        report = []
+        for idx, item in enumerate(time_reports):
+            hours_val = item['total_hours'] if item['total_hours'] else 0.0
+            
+            # Göz yormayan temiz bir süre formatı oluşturuyoruz (Örn: 12.45 Saat)
+            formatted_time = f"{round(hours_val, 2)} Saat"
+            
+            report.append({
+                "rank": idx + 1,
+                "student": item['full_name'] if item['full_name'] and item['full_name'].strip() else "Bilinmeyen Öğrenci",
+                "department": item['department_name'] if item['department_name'] else "Genel / Belirtilmemiş",
+                "total_time": formatted_time
+            })
+            
+        return Response(report)
