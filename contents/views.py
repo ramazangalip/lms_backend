@@ -1211,6 +1211,8 @@ class SurveyDetailView(APIView):
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework import permissions
+from django.db.models import Value, CharField
+from django.db.models.functions import Concat
 
 class AcademicSurveyAnalyticsView(APIView):
     permission_classes = [permissions.IsAdminUser] # Sadece Akademisyen/Admin
@@ -1220,7 +1222,7 @@ class AcademicSurveyAnalyticsView(APIView):
         survey_id = request.query_params.get('survey_id') # Frontend'den gelen hafta numarasıdır
         
         # Sadece 4. hafta ve sonrasındaki anketlerin yanıtlarını çekiyoruz
-        responses = StudentSurveyResponse.objects.select_related('student', 'question__survey').filter(
+        responses = StudentSurveyResponse.objects.filter(
             question__survey__week_number__gte=4
         )
         
@@ -1239,21 +1241,39 @@ class AcademicSurveyAnalyticsView(APIView):
             5: "Her zaman"
         }
             
+        # --- KESİN ÇÖZÜM VE SÜPER OPTİMİZASYON ALANI (TIMEOUT ENGELLEYİCİ) ---
+        # N+1 query faciasını önlemek için Concat ile ad ve soyadı veritabanı seviyesinde birleştiriyoruz.
+        # Modelleri ağır nesneler olarak değil, .values() ile sadece ihtiyacımız olan alanları hafif sözlük (dict) olarak çekiyoruz.
+        raw_responses = responses.annotate(
+            full_name=Concat(
+                'student__first_name', Value(' '), 'student__last_name',
+                output_field=CharField()
+            )
+        ).values(
+            'full_name',
+            'question__text',
+            'answer_value',
+            'answer_text',
+            'question__category'
+        )
+
         report = []
-        for r in responses:
-            db_text = r.answer_text
+        for r in raw_responses:
+            db_text = r['answer_text']
+            val = r['answer_value']
+            
             # Gelen verinin boş string, None veya string "null" olup olmadığını denetliyoruz
             is_valid = db_text and str(db_text).strip() and str(db_text).lower() != 'null'
             
             # Eğer veri bozuksa veya boşsa puana göre ölçek karşılığını veriyoruz
-            final_text = db_text if is_valid else scale_map.get(r.answer_value, f"{r.answer_value} Puan")
+            final_text = db_text if is_valid else scale_map.get(val, f"{val} Puan")
 
             report.append({
-                "student": r.student.get_full_name() if r.student else "Bilinmeyen Öğrenci",
-                "question": r.question.text if r.question else "Soru Maddesi Yok",
-                "answer": r.answer_value,  # Grafik motoru için sayısal değer (1-5)
+                "student": r['full_name'] if r['full_name'] and r['full_name'].strip() else "Bilinmeyen Öğrenci",
+                "question": r['question__text'] if r['question__text'] else "Soru Maddesi Yok",
+                "answer": val,  # Grafik motoru için sayısal değer (1-5)
                 "answer_text": final_text,  # Frontend'in parantez içine basacağı garantili temiz metin
-                "category": r.question.category if r.question.category else "Genel"
+                "category": r['question__category'] if r['question__category'] else "Genel"
             })
             
         return Response(report)
