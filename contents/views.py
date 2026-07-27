@@ -1478,3 +1478,31 @@ class SystemTimeAnalyticsView(APIView):
                 } for idx, s in enumerate(student_totals[:15])
             ]
         })
+
+from django.http import HttpResponse
+from io import BytesIO
+from contents.excel_generator import generate_survey_excel
+
+class ExportSurveyExcelView(APIView):
+    permission_classes = [permissions.IsAdminUser]  # Sadece Akademisyen/Admin indirebilir
+
+    def get(self, request, week_number):
+        try:
+            wb = generate_survey_excel(week_number)
+            
+            # Bellek içi akışa kaydet
+            response_stream = BytesIO()
+            wb.save(response_stream)
+            response_stream.seek(0)
+            
+            filename = f"survey_hafta_{week_number}_cevaplari.xlsx"
+            response = HttpResponse(
+                response_stream.getvalue(),
+                content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            )
+            response['Content-Disposition'] = f'attachment; filename="{filename}"'
+            return response
+        except ValueError as ve:
+            return Response({"error": str(ve)}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({"error": f"Sunucu hatası: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
