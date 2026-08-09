@@ -6,8 +6,8 @@ User = get_user_model()
 
 class WeeklyContent(models.Model):
     week_number = models.IntegerField(unique=True, verbose_name="Hafta")
-    title = models.CharField(max_length=200, verbose_name="Hafta Başlığı")
-    description = models.TextField(blank=True, verbose_name="Ders Notları")
+    title = models.CharField(max_length=200, blank=True, null=True, verbose_name="Hafta Başlığı")
+    description = models.TextField(blank=True, null=True, verbose_name="Ders Notları")
 
     release_date = models.DateTimeField(
         null=True, 
@@ -15,9 +15,15 @@ class WeeklyContent(models.Model):
         verbose_name="Erişime Açılma Tarihi",
         help_text="Bu tarih gelmeden öğrenci içeriğe erişemez."
     )
+    due_date = models.DateTimeField(
+        null=True, 
+        blank=True, 
+        verbose_name="Erişime Kapanma (Pasif Olma) Tarihi",
+        help_text="Bu tarih geçtikten sonra öğrenci içeriğe erişemez."
+    )
     
 
-    intro_title = models.CharField(max_length=255, default="Genel Tanıtım", verbose_name="Tanıtım Başlığı")
+    intro_title = models.CharField(max_length=255, default="Genel Tanıtım", blank=True, null=True, verbose_name="Tanıtım Başlığı")
     intro_video_url = models.URLField(blank=True, null=True, verbose_name="Tanıtım Videosu (Embed Link)")
     intro_description = models.TextField(blank=True, null=True, verbose_name="Tanıtım Metni/Açıklaması")
 
@@ -27,7 +33,7 @@ class WeeklyContent(models.Model):
         ordering = ['week_number']
 
     def __str__(self):
-        return f"Hafta {self.week_number} - {self.title}"
+        return f"Hafta {self.week_number} - {self.title or ''}"
 
 class IntroVideoCompletion(models.Model):
     """
@@ -65,12 +71,10 @@ class Material(models.Model):
         related_name='materials', 
         on_delete=models.CASCADE
     )
-    content_type = models.CharField(max_length=10, choices=CONTENT_TYPES)
-    embed_url = models.URLField(verbose_name="Materyal Linki", help_text="Video/Podcast embed kodu veya OneDrive PDF indirme linki.")
-    title = models.CharField(max_length=200, verbose_name="Materyal Başlığı")
-    
-   
-    point_value = models.PositiveIntegerField(default=1, verbose_name="Tamamlama Puanı")
+    content_type = models.CharField(max_length=10, choices=CONTENT_TYPES, blank=True, null=True)
+    embed_url = models.URLField(verbose_name="Materyal Linki", help_text="Video/Podcast embed kodu veya OneDrive PDF indirme linki.", blank=True, null=True)
+    title = models.CharField(max_length=200, verbose_name="Materyal Başlığı", blank=True, null=True)
+    point_value = models.PositiveIntegerField(default=1, verbose_name="Tamamlama Puanı", blank=True, null=True)
 
     def __str__(self):
         return f"{self.get_content_type_display()} - {self.title}"

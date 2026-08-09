@@ -138,6 +138,14 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
     is_survey_required = serializers.SerializerMethodField()
     survey_data = serializers.SerializerMethodField()
     
+    title = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    description = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    intro_title = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    intro_video_url = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    intro_description = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    release_date = serializers.DateTimeField(required=False, allow_null=True)
+    due_date = serializers.DateTimeField(required=False, allow_null=True)
+
     progress = serializers.SerializerMethodField()
     is_completed = serializers.SerializerMethodField()
     is_intro_watched = serializers.SerializerMethodField()
@@ -150,7 +158,7 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'week_number', 'title', 'description', 
             'intro_title', 'intro_video_url', 'intro_description',
-            'release_date', 'is_locked', 'lock_reason',
+            'release_date', 'due_date', 'is_locked', 'lock_reason',
             'is_intro_watched', 'materials', 'flashcards', 
             'progress', 'is_completed', 'pre_test_questions',
             'entry_questions', 'is_entry_test_passed',
@@ -298,6 +306,11 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
         if obj.release_date and now < obj.release_date:
             return True
 
+        # PASİF ETME TARİHİ KONTROLÜ
+        # Hoca pasif etme tarihi koyduysa ve bu tarih geçtiyse hafta kilitlenir.
+        if obj.due_date and now >= obj.due_date:
+            return True
+
         # 3. SIRALI GEÇİŞ BARİKATI (Sadece yayınlanmış haftalar arasında zincir kurar)
         if obj.week_number > 1:
             # Bir önceki haftayı bul
@@ -331,6 +344,9 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
         now = timezone.now()
         if obj.release_date and now < obj.release_date:
             return f"Bu içerik {obj.release_date.strftime('%d.%m.%Y')} tarihinde erişime açılacaktır."
+
+        if obj.due_date and now >= obj.due_date:
+            return f"Bu içeriğin erişim süresi {obj.due_date.strftime('%d.%m.%Y')} tarihinde sona ermiştir."
 
         if obj.week_number > 1:
             previous_week = WeeklyContent.objects.filter(week_number=obj.week_number - 1).first()
@@ -417,16 +433,10 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
         return self.save_all_content(validated_data)
 
     def update(self, instance, validated_data):
-        # save_all_content metodun zaten 'content' nesnesini dönüyor.
-        # Bu nesneyi yakalayıp update metodundan dışarı dönmelisin.
         instance = self.save_all_content(validated_data)
-        
         if not instance:
-            # Eğer bir hata olduysa ve nesne dönmediyse DRF hata verir, 
-            # bu yüzden burada bir geri dönüş garantisi olmalı.
             raise serializers.ValidationError({"error": "Güncelleme sırasında nesne oluşturulamadı."})
-            
-        return instance  # <--- KRİTİK SATIR BURASI!
+        return instance
 
     def save_all_content(self, validated_data):
         """
@@ -444,8 +454,6 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
         cards_data = validated_data.pop('flashcards', None)
         entry_questions_data = validated_data.pop('entry_questions', None)
         
-        # ANKET VERİLERİ (Senin gönderdiğin yapıya göre)
-       # ANKET VERİLERİ (Senin gönderdiğin yapıya tam uyumlu)
         survey_questions_list = validated_data.pop('survey_questions', None)
         s_title = validated_data.pop('survey_title', None)
         has_survey_flag = validated_data.pop('has_survey', False)
@@ -458,106 +466,83 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
                 content, _ = WeeklyContent.objects.update_or_create(
                     week_number=w_num,
                     defaults={
-                        'title': validated_data.get('title'),
+                        'title': validated_data.get('title', ''),
                         'description': validated_data.get('description', ''),
                         'intro_title': validated_data.get('intro_title', 'Genel Tanıtım'),
                         'intro_video_url': validated_data.get('intro_video_url', ''),
                         'intro_description': validated_data.get('intro_description', ''),
                         'release_date': validated_data.get('release_date', None),
+                        'due_date': validated_data.get('due_date', None),
                     }
                 )
 
                 # 3. ANKET (SURVEY) KAYIT MANTIĞI
-                # 'has_survey_flag' artık yukarıda tanımlandığı için hata vermez
-                # ... save_all_content içi ...
+                if has_survey_flag:
+                    if not survey_questions_list:
+                        survey_questions_list = self.initial_data.get('survey_questions', [])
 
-            # --- 3. ANKET (SURVEY) KAYIT MANTIĞI ---
-                # --- 3. ANKET (SURVEY) KAYIT MANTIĞI ---
-                # --- 3. ANKET (SURVEY) KAYIT MANTIĞI ---
-            if has_survey_flag:
-            # DİKKAT: pop ile sildiysen buradan tekrar get ile alamazsın. 
-            # Yukarıda tanımladığın değişkeni kullanmalısın.
-                if not survey_questions_list:
-                    survey_questions_list = self.initial_data.get('survey_questions', [])
-
-                if survey_questions_list:
-                    survey_obj, _ = Survey.objects.update_or_create(
-                        week_number=w_num,
-                        defaults={
-                            'title': s_title if (s_title and str(s_title) != str(w_num)) else f"Hafta {w_num} Ölçeği",
-                            'description': f"{w_num}. Hafta Bilimsel Ölçeği"
-                        }
-                    )
-                    
-                    keep_survey_q_ids = []
-                    for s_q in survey_questions_list:
-                        s_q_text = s_q.get('text')
-                        if not s_q_text: continue
-                        
-                        # Soruyu ID yoksa metin üzerinden bulmaya çalış (Oracle dostu yöntem)
-                        s_q_id = s_q.get('id')
-                        survey_question_obj, _ = SurveyQuestion.objects.update_or_create(
-                            survey=survey_obj,
-                            id=s_q_id if (s_q_id and str(s_q_id).isdigit()) else None,
+                    if survey_questions_list:
+                        survey_obj, _ = Survey.objects.update_or_create(
+                            week_number=w_num,
                             defaults={
-                                'text': s_q_text,
-                                'category': s_q.get('category', '')
+                                'title': s_title if (s_title and str(s_title) != str(w_num)) else f"Hafta {w_num} Ölçeği",
+                                'description': f"{w_num}. Hafta Bilimsel Ölçeği"
                             }
                         )
-                        keep_survey_q_ids.append(survey_question_obj.id)
-
-                        # --- ŞIKLARI KAYDET (KRİTİK DÜZELTME) ---
-                        s_o_list = s_q.get('options', [])
-                        keep_survey_o_ids = []
                         
-                        # serializers.py içinde bul ve değiştir:
-                        # --- ŞIKLARI (OPTIONS) KAYDETME DÖNGÜSÜ ---
-                        # --- ŞIKLARI (OPTIONS) KAYDETME DÖNGÜSÜ ---
-                    for s_o in s_o_list:
-                        o_text = s_o.get('option_text')
-                        o_val = s_o.get('value')
-                        s_o_id = s_o.get('id')
+                        keep_survey_q_ids = []
+                        for s_q in survey_questions_list:
+                            s_q_text = s_q.get('text')
+                            if not s_q_text:
+                                continue
+                            
+                            s_q_id = s_q.get('id')
+                            survey_question_obj, _ = SurveyQuestion.objects.update_or_create(
+                                survey=survey_obj,
+                                id=s_q_id if (s_q_id and str(s_q_id).isdigit()) else None,
+                                defaults={
+                                    'text': s_q_text,
+                                    'category': s_q.get('category', '')
+                                }
+                            )
+                            keep_survey_q_ids.append(survey_question_obj.id)
 
-                        # KRİTİK DÜZELTME: Metin boş geliyorsa DB'deki mevcut kaydı koruma altına al
-                        if not o_text or str(o_text).strip() == "":
-                            # Veritabanında bu soruya ait ve bu değere (1,2,3..) sahip kayıt var mı bak
-                            existing_opt = SurveyOption.objects.filter(question=survey_question_obj, value=o_val).first()
-                            if existing_opt:
-                                # Varsa ID'sini koruma listesine ekle ki en alttaki .delete() onu silmesin
-                                keep_survey_o_ids.append(existing_opt.id)
-                                print(f"      [KORUNDU] Puan {o_val} metni boş, mevcut DB kaydı silinmemesi için listeye alındı.")
-                            continue 
+                            s_o_list = s_q.get('options', [])
+                            keep_survey_o_ids = []
+                            for s_o in s_o_list:
+                                o_text = s_o.get('option_text')
+                                o_val = s_o.get('value')
+                                s_o_id = s_o.get('id')
 
-                        # Eğer metin doluysa her zamanki gibi güncelle veya oluştur
-                        survey_option_obj, _ = SurveyOption.objects.update_or_create(
-                            question=survey_question_obj,
-                            value=o_val, 
-                            defaults={
-                                'option_text': str(o_text).strip()
-                            }
-                        )
-                        keep_survey_o_ids.append(survey_option_obj.id)
+                                if not o_text or str(o_text).strip() == "":
+                                    existing_opt = SurveyOption.objects.filter(question=survey_question_obj, value=o_val).first()
+                                    if existing_opt:
+                                        keep_survey_o_ids.append(existing_opt.id)
+                                    continue 
 
-                    # KRİTİK DOKUNUŞ: Sadece listede eleman varsa temizlik yap (boş liste gelirse silmeyi engelle)
-                    if keep_survey_o_ids:
-                        survey_question_obj.options.exclude(id__in=keep_survey_o_ids).delete()
-                        
-                        # Gereksiz şıkları temizle
-                 
+                                survey_option_obj, _ = SurveyOption.objects.update_or_create(
+                                    question=survey_question_obj,
+                                    value=o_val, 
+                                    defaults={
+                                        'option_text': str(o_text).strip()
+                                    }
+                                )
+                                keep_survey_o_ids.append(survey_option_obj.id)
 
-                    # Gereksiz soruları temizle
-                    survey_obj.questions.exclude(id__in=keep_survey_q_ids).delete()
-                    
+                            if keep_survey_o_ids:
+                                survey_question_obj.options.exclude(id__in=keep_survey_o_ids).delete()
+
+                        if keep_survey_q_ids:
+                            survey_obj.questions.exclude(id__in=keep_survey_q_ids).delete()
                 else:
-                        # has_survey_flag False ise anketi veritabanından kaldır
-                        Survey.objects.filter(week_number=w_num).delete()
-                        print("      [UYARI] Bu sorunun options listesi BOŞ veya HATALI geliyor!")
+                    Survey.objects.filter(week_number=w_num).delete()
 
                 # 4. MATERYALLER VE QUIZLER
                 if mats_data is not None:
                     keep_mat_ids = []
                     for m_item in mats_data:
-                        if not m_item.get('title'): continue
+                        if not m_item.get('title'):
+                            continue
                         q_data = m_item.pop('quiz', None)
                         m_id = m_item.get('id')
 
@@ -577,7 +562,8 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
                             quiz_qs = q_data.pop('questions', [])
                             keep_quiz_q_ids = []
                             for idx, q_val in enumerate(quiz_qs):
-                                if not q_val.get('question_text'): continue
+                                if not q_val.get('question_text'):
+                                    continue
                                 o_list = q_val.pop('options', [])
                                 q_id = q_val.get('id')
                                 q_obj, _ = QuizQuestion.objects.update_or_create(
@@ -600,7 +586,8 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
                 if cards_data is not None:
                     keep_card_ids = []
                     for idx, c_item in enumerate(cards_data):
-                        if not c_item.get('question'): continue
+                        if not c_item.get('question'):
+                            continue
                         c_id = c_item.get('id')
                         card_obj, _ = Flashcard.objects.update_or_create(
                             weekly_content=content,
@@ -615,7 +602,8 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
                 if entry_questions_data is not None:
                     keep_entry_ids = []
                     for eq_idx, eq_item in enumerate(entry_questions_data):
-                        if not eq_item.get('question_text'): continue
+                        if not eq_item.get('question_text'):
+                            continue
                         eq_id = eq_item.get('id')
                         
                         t_week_num = eq_item.get('target_week')
@@ -646,9 +634,8 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
                     if keep_entry_ids:
                         WeeklyPreTestQuestion.objects.filter(appearing_week=content).exclude(id__in=keep_entry_ids).delete()
 
+                print("--- TÜM KAYITLAR TAMAMLANDI, COMMIT EDİLİYOR ---")
                 return content
-            
-            print("--- TÜM KAYITLAR TAMAMLANDI, COMMIT EDİLİYOR ---")
 
         except Exception as e:
             print(f"DEBUG: Kayıt Hatası -> {str(e)}")

@@ -15,7 +15,7 @@ class MaterialInline(admin.TabularInline):
 
 @admin.register(WeeklyContent)
 class WeeklyContentAdmin(admin.ModelAdmin):
-    list_display = ('week_number', 'title', 'has_global_intro')
+    list_display = ('week_number', 'title', 'release_date', 'due_date', 'has_global_intro')
     list_filter = ('week_number',)
     search_fields = ('title', 'description')
     ordering = ('week_number',)
@@ -23,7 +23,7 @@ class WeeklyContentAdmin(admin.ModelAdmin):
 
     fieldsets = (
         ('Haftalık Ders Bilgileri', {
-            'fields': ('week_number', 'title', 'description')
+            'fields': ('week_number', 'title', 'description', 'release_date', 'due_date')
         }),
         ('Merkezi Tanıtım Videosu (Sadece Hafta 1 İçin Doldurun)', {
             'description': (
