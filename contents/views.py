@@ -84,19 +84,40 @@ class WeeklyContentView(APIView):
 
             return Response(data, status=status.HTTP_200_OK)
 
-        # 2. LİSTE GÖRÜNÜMÜ (Hem Akademisyen Paneli hem Öğrenci Dashboard burayı kullanır)
-        # Prefetch_related kullanarak SQL sorgu sayısını azaltıyoruz
-        contents = WeeklyContent.objects.all().order_by('week_number').prefetch_related(
+        # 2. LİSTE GÖRÜNÜMÜ - TOPLU SORGU VE CONTEXT OPTİMİZASYONU (N+1 Önleyici)
+        contents = list(WeeklyContent.objects.all().order_by('week_number').prefetch_related(
             'materials', 'flashcards', 'materials__quiz', 'materials__quiz__questions'
-        )
-        
-        # many=True durumunda her bir içerik için Serializer içindeki metodlar çalışacak
-        serializer = WeeklyContentSerializer(contents, many=True, context={'request': request})
-        
-        # DEBUG: Akademisyen paneli için veri gidiyor mu terminalden bak
-        if getattr(user, 'is_teacher', False) or user.is_staff:
-            print(f"DEBUG: Akademisyen {user.username} için {len(serializer.data)} hafta paketlendi.")
+        ))
 
+        is_teacher = getattr(user, 'is_teacher', False) or user.is_staff
+        
+        # Batch context oluşturma (250+ sorguyu 5 sorguya düşürür)
+        context = {'request': request}
+        context['weeks_by_num'] = {c.week_number: c for c in contents}
+
+        from .models import Survey, StudentSurveyResponse, StudentProgress, IntroVideoCompletion, WeeklyPreTestQuestion, WeeklyPreTestResult, WeeklyContentSchedule
+        surveys = list(Survey.objects.all().prefetch_related('questions__options'))
+        context['surveys_map'] = {s.week_number: s for s in surveys}
+
+        schedules = list(WeeklyContentSchedule.objects.all())
+        schedules_map = {}
+        for s in schedules:
+            schedules_map.setdefault(s.weekly_content_id, {})[s.department] = s
+        context['schedules_map'] = schedules_map
+
+        if user.is_authenticated and not is_teacher:
+            context['user_progress_map'] = {p.weekly_content_id: p for p in StudentProgress.objects.filter(student=user)}
+            context['is_intro_watched'] = IntroVideoCompletion.objects.filter(student=user, is_watched=True).exists()
+            context['answered_survey_weeks'] = set(StudentSurveyResponse.objects.filter(student=user).values_list('question__survey__week_number', flat=True))
+            context['passed_entry_weeks'] = set(WeeklyPreTestResult.objects.filter(student=user, is_completed=True).values_list('week_id', flat=True))
+        
+        entry_qs = list(WeeklyPreTestQuestion.objects.all().select_related('target_week').prefetch_related('options'))
+        entry_questions_map = {}
+        for q in entry_qs:
+            entry_questions_map.setdefault(q.appearing_week_id, []).append(q)
+        context['entry_questions_map'] = entry_questions_map
+
+        serializer = WeeklyContentSerializer(contents, many=True, context=context)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     # post metodu aynı kalacak...
@@ -364,29 +385,22 @@ class CompletedMaterialIdsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from django.db.models import Q
+        progresses = StudentProgress.objects.filter(student=request.user).values_list('weekly_content_id', 'current_attempt_round')
+        progress_map = dict(progresses)
         
-        # 1. Öğrencinin haftalık tur bilgilerini al
-        student_progresses = StudentProgress.objects.filter(student=request.user)
-        
-        # 2. Dinamik bir filtre oluştur (Hafta X'te Tur Y verilerini getir)
-        query = Q()
-        for prog in student_progresses:
-            query |= Q(
-                material__parent_content=prog.weekly_content, 
-                attempt_round=prog.current_attempt_round
-            )
-        
-        if not query:
+        if not progress_map:
             return Response([])
 
-        # 3. Sadece aktif tura ait olan tamamlanmış materyal ID'lerini çek
-        completed_ids = CompletedMaterial.objects.filter(
-            query,
-            student=request.user
-        ).values_list('material_id', flat=True)
-        
-        return Response([str(m_id) for m_id in completed_ids])
+        completed_records = CompletedMaterial.objects.filter(
+            student=request.user,
+            material__parent_content_id__in=progress_map.keys()
+        ).values_list('material_id', 'attempt_round', 'material__parent_content_id')
+
+        valid_ids = [
+            str(mat_id) for mat_id, round_num, week_id in completed_records
+            if progress_map.get(week_id) == round_num
+        ]
+        return Response(valid_ids)
 
 class StudentProgressListView(APIView):
     permission_classes = [IsAuthenticated]
@@ -438,6 +452,17 @@ class StudentAnalyticsView(APIView):
         is_teacher = getattr(request.user, 'is_teacher', False) or request.user.is_staff
         department_param = request.query_params.get('department')
 
+        if not is_teacher:
+            # Öğrenci paneli sadece total_points okuduğu için ağır 14 haftalık analizi pas geç
+            return Response({
+                "id": request.user.id,
+                "first_name": request.user.first_name,
+                "last_name": request.user.last_name,
+                "email": request.user.email,
+                "department": request.user.department,
+                "total_points": getattr(request.user, 'total_points', 0)
+            }, status=status.HTTP_200_OK)
+
         # 2. FİLTRELEME MANTIĞI (Bölüm bazlı filtreleme korunuyor)
         if is_teacher:
             if not department_param or department_param == 'all':
@@ -458,7 +483,7 @@ class StudentAnalyticsView(APIView):
         paginated_students = paginator.paginate_queryset(queryset, request)
         
         if not paginated_students:
-            return Response([], status=status.HTTP_200_OK)
+            return paginator.get_paginated_response([])
 
         # Sadece bu sayfadaki öğrencilerin ID'lerini alarak toplu veri çekiyoruz (RAM dostu)
         student_ids = [s.id for s in paginated_students]
@@ -922,8 +947,8 @@ class PreTestStatusView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        # 1. Mevcut Ön Test Sorularını Getir
-        questions = PreTestQuestion.objects.all()
+        # 1. Mevcut Ön Test Sorularını Getir (Prefetch ile N+1 engellendi)
+        questions = PreTestQuestion.objects.all().prefetch_related('options')
         questions_serializer = PreTestQuestionSerializer(questions, many=True)
         
         # 2. Öğrencinin Test Sonucunu Getir

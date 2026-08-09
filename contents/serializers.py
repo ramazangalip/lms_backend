@@ -162,10 +162,61 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
             'is_intro_watched', 'materials', 'flashcards', 
             'progress', 'is_completed', 'pre_test_questions',
             'entry_questions', 'is_entry_test_passed',
-            'is_entry_test_required','total_score',# BURAYA EKLEMEN GEREKENLER:
-            'is_survey_required', 'survey_data', # Okuma için
-            'survey_questions', 'survey_title', 'has_survey' # Yazma için
+            'is_entry_test_required','total_score',
+            'is_survey_required', 'survey_data',
+            'survey_questions', 'survey_title', 'has_survey', 'schedules'
         ]
+
+    def get_effective_dates(self, obj):
+        request = self.context.get('request')
+        target_dept = self.context.get('target_department')
+
+        if not target_dept and request:
+            if hasattr(request, 'query_params'):
+                target_dept = request.query_params.get('department')
+            if not target_dept and hasattr(request, 'user') and request.user and request.user.is_authenticated:
+                target_dept = getattr(request.user, 'department', None)
+
+        if target_dept and target_dept != 'all':
+            schedules_map = self.context.get('schedules_map')
+            if schedules_map is not None:
+                dept_schedules = schedules_map.get(obj.id, {})
+                sch = dept_schedules.get(target_dept)
+                if sch:
+                    return (sch.release_date, sch.due_date)
+            else:
+                from .models import WeeklyContentSchedule
+                sch = WeeklyContentSchedule.objects.filter(weekly_content=obj, department=target_dept).first()
+                if sch:
+                    return (sch.release_date, sch.due_date)
+
+        return (obj.release_date, obj.due_date)
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        rel_date, due_date = self.get_effective_dates(instance)
+        ret['release_date'] = rel_date.isoformat() if rel_date else None
+        ret['due_date'] = due_date.isoformat() if due_date else None
+
+        schedules_map = self.context.get('schedules_map')
+        if schedules_map is not None:
+            dept_schedules = schedules_map.get(instance.id, {})
+            ret['schedules'] = {
+                dept: {
+                    "release_date": s.release_date.isoformat() if s.release_date else None,
+                    "due_date": s.due_date.isoformat() if s.due_date else None
+                }
+                for dept, s in dept_schedules.items()
+            }
+        else:
+            ret['schedules'] = {
+                s.department: {
+                    "release_date": s.release_date.isoformat() if s.release_date else None,
+                    "due_date": s.due_date.isoformat() if s.due_date else None
+                }
+                for s in instance.schedules.all()
+            }
+        return ret
     # --- YENİ: ANKET GEREKLİ Mİ KONTROLÜ ---
     # --- 1. ANKET KİLİT MANTIĞI ---
     def get_is_survey_required(self, obj):
@@ -173,17 +224,22 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
         if not request or not request.user or not request.user.is_authenticated:
             return False
         
-        # Akademisyen veya personelse anket engeline takılmasınlar
         if getattr(request.user, 'is_teacher', False) or request.user.is_staff:
             return False
 
+        surveys_map = self.context.get('surveys_map')
+        answered_survey_weeks = self.context.get('answered_survey_weeks')
+
+        if surveys_map is not None and answered_survey_weeks is not None:
+            if obj.week_number not in surveys_map:
+                return False
+            return obj.week_number not in answered_survey_weeks
+
         from .models import Survey, StudentSurveyResponse
-        # Bu haftaya atanmış bir anket var mı?
         survey = Survey.objects.filter(week_number=obj.week_number).first()
         if not survey:
             return False
 
-        # Öğrenci bu anketi (en az bir sorusunu) yanıtlamış mı?
         already_answered = StudentSurveyResponse.objects.filter(
             student=request.user, 
             question__survey=survey
@@ -193,35 +249,22 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
 
     def get_survey_data(self, obj):
         try:
-            from .models import Survey
-            
-            # 1. Debug: Hangi hafta için anket aranıyor?
-            target_week = obj.week_number
-            print(f"--- ANKET ARAMA BAŞLADI: Hafta {target_week} ---")
+            surveys_map = self.context.get('surveys_map')
+            if surveys_map is not None:
+                survey = surveys_map.get(obj.week_number)
+            else:
+                from .models import Survey
+                survey = Survey.objects.filter(week_number=obj.week_number).first()
 
-            # 2. Sorguyu yap
-            survey = Survey.objects.filter(week_number=target_week).first()
-            
             if not survey:
-                # DB'de bu hafta numarasıyla eşleşen anket yoksa buraya düşer
-                print(f"--- SONUÇ: Hafta {target_week} için DB'de anket bulunamadı! ---")
                 return None
 
-            print(f"--- SONUÇ: Anket bulundu: {survey.title} (ID: {survey.id}) ---")
-
             questions_data = []
-            # 3. Soruları çek
             all_questions = survey.questions.all()
-            print(f"--- SORU SAYISI: {all_questions.count()} ---")
 
             for q in all_questions:
-                # Dinamik şıkları çekmeye çalış
                 options_list = []
-                
-                # Modellerinde related_name='options' tanımlı olduğunu varsayıyoruz
-                # Eğer değilse q.surveyoption_set.all() denenecek
                 db_opts = getattr(q, 'options', getattr(q, 'surveyoption_set', None))
-                
                 if db_opts:
                     for opt in db_opts.all():
                         options_list.append({
@@ -237,7 +280,6 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
                     "options": options_list
                 })
 
-            print(f"--- VERİ HAZIR: {len(questions_data)} soru paketlendi. ---")
             return {
                 "id": survey.id,
                 "title": survey.title,
@@ -246,11 +288,8 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
             }
 
         except Exception as e:
-            print(f"--- KRİTİK HATA: {str(e)} ---")
-            import traceback
-            traceback.print_exc()
             return None
-    # BU METODU EKLE
+
     def get_is_entry_test_required(self, obj):
         request = self.context.get('request')
         if not request or not request.user or not request.user.is_authenticated:
@@ -262,26 +301,35 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
         if obj.week_number <= 1:
             return False
 
+        entry_questions_map = self.context.get('entry_questions_map')
+        passed_entry_weeks = self.context.get('passed_entry_weeks')
+
+        if entry_questions_map is not None and passed_entry_weeks is not None:
+            has_qs = bool(entry_questions_map.get(obj.id))
+            if not has_qs:
+                return False
+            return obj.id not in passed_entry_weeks
+
         from .models import WeeklyPreTestQuestion, WeeklyPreTestResult
-        # 1. Bu haftaya ait giriş sorusu var mı?
         has_questions = WeeklyPreTestQuestion.objects.filter(appearing_week=obj).exists()
         if not has_questions:
             return False
 
-        # 2. Öğrenci bu haftanın testini zaten çözmüş mü?
         passed = WeeklyPreTestResult.objects.filter(student=request.user, week=obj, is_completed=True).exists()
-        
-        # Eğer soru varsa VE çözülmediyse TRUE döner (Yani test istenir)
         return not passed
     
     # --- ÖĞRENCİ İLERLEME VE KİLİT MANTIKLARI (GÜVENLİ) ---
 
     def get_progress(self, obj):
         request = self.context.get('request')
-        # Hoca veya Admin ise ilerleme arama (Hata almamak için)
         if not request or not request.user or not request.user.is_authenticated or getattr(request.user, 'is_teacher', False) or request.user.is_staff:
             return 0.0
         
+        user_progress_map = self.context.get('user_progress_map')
+        if user_progress_map is not None:
+            prog_obj = user_progress_map.get(obj.id)
+            return float(prog_obj.completion_percentage) if prog_obj else 0.0
+
         progress_obj = StudentProgress.objects.filter(student=request.user, weekly_content=obj).first()
         return float(progress_obj.completion_percentage) if progress_obj else 0.0
 
@@ -290,6 +338,11 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
         if not request or not request.user or not request.user.is_authenticated or getattr(request.user, 'is_teacher', False) or request.user.is_staff:
             return False
         
+        user_progress_map = self.context.get('user_progress_map')
+        if user_progress_map is not None:
+            prog_obj = user_progress_map.get(obj.id)
+            return prog_obj.is_completed if prog_obj else False
+
         progress_obj = StudentProgress.objects.filter(student=request.user, weekly_content=obj).first()
         return progress_obj.is_completed if progress_obj else False
 
@@ -297,43 +350,40 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
         now = timezone.now()
         request = self.context.get('request')
 
-        # 1. YETKİ KONTROLÜ
         if request and request.user and (getattr(request.user, 'is_teacher', False) or request.user.is_staff):
             return False
 
-        # 2. HOCA MÜDAHALESİ (MUTLAK TARİH KİLİDİ)
-        # Hoca tarihi ileriye aldıysa, bitirilmiş olsa bile o hafta "Erişilemez" olur.
-        if obj.release_date and now < obj.release_date:
+        rel_date, due_date = self.get_effective_dates(obj)
+
+        if rel_date and now < rel_date:
             return True
 
-        # PASİF ETME TARİHİ KONTROLÜ
-        # Hoca pasif etme tarihi koyduysa ve bu tarih geçtiyse hafta kilitlenir.
-        if obj.due_date and now >= obj.due_date:
+        if due_date and now >= due_date:
             return True
 
-        # 3. SIRALI GEÇİŞ BARİKATI (Sadece yayınlanmış haftalar arasında zincir kurar)
         if obj.week_number > 1:
-            # Bir önceki haftayı bul
-            previous_week = WeeklyContent.objects.filter(week_number=obj.week_number - 1).first()
-            
+            weeks_by_num = self.context.get('weeks_by_num')
+            if weeks_by_num is not None:
+                previous_week = weeks_by_num.get(obj.week_number - 1)
+            else:
+                previous_week = WeeklyContent.objects.filter(week_number=obj.week_number - 1).first()
+
             if previous_week:
-                # ÖNEMLİ: Eğer önceki haftanın da tarihi gelmişse (yani şu an aktifse/aktiftiyse)
-                # o zaman bitirilme şartı ara.
-                if previous_week.release_date and now >= previous_week.release_date:
-                    from .models import StudentProgress
-                    prev_progress = StudentProgress.objects.filter(
-                        student=request.user, 
-                        weekly_content=previous_week
-                    ).first()
+                prev_rel_date, _ = self.get_effective_dates(previous_week)
+                if prev_rel_date and now >= prev_rel_date:
+                    user_progress_map = self.context.get('user_progress_map')
+                    if user_progress_map is not None:
+                        prev_progress = user_progress_map.get(previous_week.id)
+                    else:
+                        from .models import StudentProgress
+                        prev_progress = StudentProgress.objects.filter(
+                            student=request.user, 
+                            weekly_content=previous_week
+                        ).first()
                     
                     if not prev_progress or not prev_progress.is_completed:
                         return True
-                
-                # NOT: Eğer önceki hafta hoca tarafından ileri bir tarihe kilitlendiyse,
-                # yukarıdaki 'if'e girmez ve 3. haftanın önünü kesmez.
 
-        # 4. VARSAYILAN DURUM
-        # Tarihi gelmişse ve önünde engel yoksa aç.
         return False
 
     def get_lock_reason(self, obj):
@@ -342,16 +392,28 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
             return None
 
         now = timezone.now()
-        if obj.release_date and now < obj.release_date:
-            return f"Bu içerik {obj.release_date.strftime('%d.%m.%Y')} tarihinde erişime açılacaktır."
+        rel_date, due_date = self.get_effective_dates(obj)
 
-        if obj.due_date and now >= obj.due_date:
-            return f"Bu içeriğin erişim süresi {obj.due_date.strftime('%d.%m.%Y')} tarihinde sona ermiştir."
+        if rel_date and now < rel_date:
+            return f"Bu içerik {rel_date.strftime('%d.%m.%Y')} tarihinde erişime açılacaktır."
+
+        if due_date and now >= due_date:
+            return f"Bu içeriğin erişim süresi {due_date.strftime('%d.%m.%Y')} tarihinde sona ermiştir."
 
         if obj.week_number > 1:
-            previous_week = WeeklyContent.objects.filter(week_number=obj.week_number - 1).first()
+            weeks_by_num = self.context.get('weeks_by_num')
+            if weeks_by_num is not None:
+                previous_week = weeks_by_num.get(obj.week_number - 1)
+            else:
+                previous_week = WeeklyContent.objects.filter(week_number=obj.week_number - 1).first()
+
             if previous_week:
-                prev_progress = StudentProgress.objects.filter(student=request.user, weekly_content=previous_week).first()
+                user_progress_map = self.context.get('user_progress_map')
+                if user_progress_map is not None:
+                    prev_progress = user_progress_map.get(previous_week.id)
+                else:
+                    prev_progress = StudentProgress.objects.filter(student=request.user, weekly_content=previous_week).first()
+
                 if not prev_progress or not prev_progress.is_completed:
                     return f"Bu haftayı açmak için lütfen {obj.week_number - 1}. haftayı %100 tamamlayın."
         return None
@@ -361,19 +423,24 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
         if request and request.user.is_authenticated:
             if getattr(request.user, 'is_teacher', False) or request.user.is_staff: 
                 return True
+            is_intro_watched = self.context.get('is_intro_watched')
+            if is_intro_watched is not None:
+                return is_intro_watched
             completion = IntroVideoCompletion.objects.filter(student=request.user).first()
             return completion.is_watched if completion else False
         return False
     
     def get_entry_questions(self, obj):
         try:
-            # Soru modelini içeride import et (Circular import koruması)
-            from .models import WeeklyPreTestQuestion
-            qs = WeeklyPreTestQuestion.objects.filter(appearing_week=obj).select_related('target_week')
+            entry_questions_map = self.context.get('entry_questions_map')
+            if entry_questions_map is not None:
+                qs = entry_questions_map.get(obj.id, [])
+            else:
+                from .models import WeeklyPreTestQuestion
+                qs = WeeklyPreTestQuestion.objects.filter(appearing_week=obj).select_related('target_week').prefetch_related('options')
             
             output = []
             for q in qs:
-                # target_week yoksa veya Hafta 1 ise hata vermemesi için koruma
                 t_week_num = 1
                 if q.target_week:
                     t_week_num = q.target_week.week_number
@@ -392,7 +459,6 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
                 })
             return output
         except Exception as e:
-            print(f"DEBUG: Entry Questions Error -> {str(e)}")
             return []
     
     def get_is_entry_test_passed(self, obj):
@@ -401,10 +467,14 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
             
         request = self.context.get('request')
         if not request or not request.user or not request.user.is_authenticated:
-            return True # Akademisyen paneli için True dönmek en güvenlisidir
+            return True
             
         if getattr(request.user, 'is_teacher', False) or request.user.is_staff:
             return True
+
+        passed_entry_weeks = self.context.get('passed_entry_weeks')
+        if passed_entry_weeks is not None:
+            return obj.id in passed_entry_weeks
             
         try:
             from .models import WeeklyPreTestResult
@@ -458,6 +528,10 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
         s_title = validated_data.pop('survey_title', None)
         has_survey_flag = validated_data.pop('has_survey', False)
         
+        schedule_dept = validated_data.pop('schedule_department', None) or validated_data.pop('department', None)
+        if not schedule_dept and self.initial_data:
+            schedule_dept = self.initial_data.get('schedule_department') or self.initial_data.get('department')
+
         w_num = validated_data.get('week_number')
 
         try:
@@ -475,6 +549,32 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
                         'due_date': validated_data.get('due_date', None),
                     }
                 )
+
+                rel_date = validated_data.get('release_date')
+                due_date = validated_data.get('due_date')
+
+                if schedule_dept:
+                    from .models import WeeklyContentSchedule
+                    dept_list = ['cocukgelisimi', 'diyaliz', 'disprotezteknolojisi', 'eczanehizmetleri', 'fizyoterapi']
+                    if schedule_dept == 'all':
+                        for d in dept_list:
+                            WeeklyContentSchedule.objects.update_or_create(
+                                weekly_content=content,
+                                department=d,
+                                defaults={
+                                    'release_date': rel_date,
+                                    'due_date': due_date
+                                }
+                            )
+                    else:
+                        WeeklyContentSchedule.objects.update_or_create(
+                            weekly_content=content,
+                            department=schedule_dept,
+                            defaults={
+                                'release_date': rel_date,
+                                'due_date': due_date
+                            }
+                        )
 
                 # 3. ANKET (SURVEY) KAYIT MANTIĞI
                 if has_survey_flag:

@@ -35,6 +35,33 @@ class WeeklyContent(models.Model):
     def __str__(self):
         return f"Hafta {self.week_number} - {self.title or ''}"
 
+class WeeklyContentSchedule(models.Model):
+    weekly_content = models.ForeignKey(
+        WeeklyContent,
+        related_name='schedules',
+        on_delete=models.CASCADE,
+        verbose_name="Haftalık İçerik"
+    )
+    department = models.CharField(max_length=100, verbose_name="Bölüm Kodu")
+    release_date = models.DateTimeField(
+        null=True, 
+        blank=True, 
+        verbose_name="Erişime Açılma Tarihi"
+    )
+    due_date = models.DateTimeField(
+        null=True, 
+        blank=True, 
+        verbose_name="Erişime Kapanma (Pasif Olma) Tarihi"
+    )
+
+    class Meta:
+        verbose_name = "Bölüm Bazlı Hafta Takvimi"
+        verbose_name_plural = "Bölüm Bazlı Hafta Takvimleri"
+        unique_together = ('weekly_content', 'department')
+
+    def __str__(self):
+        return f"Hafta {self.weekly_content.week_number} - {self.department}"
+
 class IntroVideoCompletion(models.Model):
     """
     SİSTEM GENELİ TEK TANITIM VİDEOSU TAKİBİ

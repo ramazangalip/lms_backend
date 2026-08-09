@@ -11,6 +11,10 @@ class MaterialInline(admin.TabularInline):
     extra = 1
     fields = ('content_type', 'title', 'embed_url')
 
+class WeeklyContentScheduleInline(admin.TabularInline):
+    model = WeeklyContentSchedule
+    extra = 1
+
 # --- MODELLER ---
 
 @admin.register(WeeklyContent)
@@ -19,7 +23,7 @@ class WeeklyContentAdmin(admin.ModelAdmin):
     list_filter = ('week_number',)
     search_fields = ('title', 'description')
     ordering = ('week_number',)
-    inlines = [MaterialInline]
+    inlines = [MaterialInline, WeeklyContentScheduleInline]
 
     fieldsets = (
         ('Haftalık Ders Bilgileri', {
@@ -31,7 +35,7 @@ class WeeklyContentAdmin(admin.ModelAdmin):
                 "Hafta 1'e eklenen video global kilit görevi görür."
             ),
             'fields': ('intro_title', 'intro_video_url'),
-            'classes': ('collapse',) # Varsayılan olarak kapalı durur, Hafta 1'de açılabilir
+            'classes': ('collapse',)
         }),
     )
 
@@ -39,6 +43,12 @@ class WeeklyContentAdmin(admin.ModelAdmin):
         return bool(obj.intro_video_url)
     has_global_intro.boolean = True
     has_global_intro.short_description = "Tanıtım Videosu Var"
+
+@admin.register(WeeklyContentSchedule)
+class WeeklyContentScheduleAdmin(admin.ModelAdmin):
+    list_display = ('weekly_content', 'department', 'release_date', 'due_date')
+    list_filter = ('department', 'weekly_content')
+    search_fields = ('department', 'weekly_content__title')
 
     def formfield_for_dbfield(self, db_field, **kwargs):
         field = super().formfield_for_dbfield(db_field, **kwargs)
