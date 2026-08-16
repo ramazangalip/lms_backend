@@ -33,18 +33,14 @@ class QuizSerializer(serializers.ModelSerializer):
         fields = ['id', 'title', 'description', 'questions']
 
 class MaterialSerializer(serializers.ModelSerializer):
-    # DİKKAT: read_only=True KISMINI SİLDİK
     id = serializers.IntegerField(required=False) 
     quiz = QuizSerializer(required=False, allow_null=True)
     embed_url = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    min_duration_seconds = serializers.IntegerField(required=False, allow_null=True, default=300)
 
     class Meta:
         model = Material
-        fields = ['id', 'content_type', 'title', 'embed_url', 'point_value', 'quiz']
-    
-    class Meta:
-        model = Material
-        fields = ['id', 'content_type', 'embed_url', 'title', 'point_value', 'quiz']
+        fields = ['id', 'content_type', 'embed_url', 'title', 'point_value', 'min_duration_seconds', 'quiz']
         extra_kwargs = {'id': {'read_only': False, 'required': False}}
 
 class FlashcardSerializer(serializers.ModelSerializer):

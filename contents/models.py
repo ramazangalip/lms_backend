@@ -102,6 +102,7 @@ class Material(models.Model):
     embed_url = models.URLField(verbose_name="Materyal Linki", help_text="Video/Podcast embed kodu veya OneDrive PDF indirme linki.", blank=True, null=True)
     title = models.CharField(max_length=200, verbose_name="Materyal Başlığı", blank=True, null=True)
     point_value = models.PositiveIntegerField(default=1, verbose_name="Tamamlama Puanı", blank=True, null=True)
+    min_duration_seconds = models.PositiveIntegerField(default=300, verbose_name="Minimum İzleme/Dinleme Süresi (Saniye)", blank=True, null=True)
 
     def __str__(self):
         return f"{self.get_content_type_display()} - {self.title}"
