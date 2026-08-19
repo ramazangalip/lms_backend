@@ -7,7 +7,7 @@ from .serializers import *
 from django.utils import timezone
 from datetime import date, timedelta
 from rest_framework.permissions import IsAdminUser
-from django.db.models import Sum
+from django.db.models import Sum, F
 from django.conf import settings
 from django.shortcuts import get_object_or_404
 import google as genai
@@ -67,7 +67,16 @@ class WeeklyContentView(APIView):
         
         # 1. TEK HAFTA DETAYI (Akademisyen düzenleme yaparken veya öğrenci haftaya girdiğinde)
         if week_number:
-            content = WeeklyContent.objects.filter(week_number=week_number).first()
+            content = WeeklyContent.objects.filter(week_number=week_number).prefetch_related(
+                'materials',
+                'materials__quiz',
+                'materials__quiz__questions',
+                'materials__quiz__questions__options',
+                'flashcards',
+                'schedules',
+                'entry_questions__options',
+                'entry_questions__target_week'
+            ).first()
             if not content:
                 return Response({"detail": "Bu hafta bulunamadı."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -282,15 +291,19 @@ class TrackActivityView(APIView):
             # KRİTİK DEĞİŞİKLİK: 
             # get_or_create içine 'material' alanını ekliyoruz.
             # Böylece her materyal için ayrı bir satır oluşur.
-            tracking, _ = TimeTracking.objects.get_or_create(
+            tracking, created = TimeTracking.objects.get_or_create(
                 student=request.user,
                 weekly_content=weekly_content,
                 material_id=material_id, # Materyal bazlı satır
                 attempt_round=current_round,
-                date=date.today()
+                date=date.today(),
+                defaults={'duration_seconds': seconds}
             )
-            tracking.duration_seconds += seconds
-            tracking.save()
+            if not created:
+                TimeTracking.objects.filter(pk=tracking.pk).update(
+                    duration_seconds=F('duration_seconds') + seconds
+                )
+                tracking.refresh_from_db()
             
             return Response({
                 "status": "success", 
@@ -495,6 +508,11 @@ class StudentAnalyticsView(APIView):
         all_answers = list(StudentAnswer.objects.filter(
             attempt__student_id__in=student_ids
         ).select_related('question', 'selected_option', 'attempt'))
+
+        answers_by_attempt = {}
+        for ans in all_answers:
+            answers_by_attempt.setdefault(ans.attempt_id, []).append(ans)
+
         all_progress = list(StudentProgress.objects.filter(student_id__in=student_ids).select_related('weekly_content'))
         all_pre_tests = {pt.student_id: pt for pt in PreTestResult.objects.filter(student_id__in=student_ids)}
         all_questions = list(StudentQuestion.objects.filter(student_id__in=student_ids).select_related('weekly_content'))
@@ -528,7 +546,7 @@ class StudentAnalyticsView(APIView):
                 last_attempt = att_2 if att_2 else att_1
                 
                 if last_attempt:
-                    s_answers = [ans for ans in all_answers if ans.attempt_id == last_attempt.id]
+                    s_answers = answers_by_attempt.get(last_attempt.id, [])
                     for ans in s_answers:
                         quiz_results.append({
                             "question_text": ans.question.question_text,
@@ -644,26 +662,37 @@ class QuizSubmitView(APIView):
             attempt_round=current_round # Hangi turda olduğu kaydediliyor
         )
 
-        # 5. Cevapları işle
+        # 5. Cevapları optimize şekilde işle (N+1 Önleme)
+        questions_map = {q.id: q for q in quiz.questions.all()}
+        options_map = {o.id: o for o in QuizOption.objects.filter(question__quiz=quiz)}
+        answers_to_create = []
+
         for ans in answers_data:
-            q_id = str(ans.get('question_id'))
-            o_id = str(ans.get('option_id'))
+            q_id_raw = ans.get('question_id')
+            o_id_raw = ans.get('option_id')
             
             try:
-                question = get_object_or_404(QuizQuestion, id=q_id, quiz=quiz)
-                option = get_object_or_404(QuizOption, id=o_id, question=question)
+                q_id = int(q_id_raw) if q_id_raw is not None else None
+                o_id = int(o_id_raw) if o_id_raw is not None else None
+
+                question = questions_map.get(q_id)
+                option = options_map.get(o_id)
                 
-                if option.is_correct:
-                    correct_count += 1
-                
-                StudentAnswer.objects.create(
-                    attempt=attempt, 
-                    question=question, 
-                    selected_option=option, 
-                    is_correct=option.is_correct
-                )
+                if question and option and option.question_id == question.id:
+                    if option.is_correct:
+                        correct_count += 1
+                    
+                    answers_to_create.append(StudentAnswer(
+                        attempt=attempt, 
+                        question=question, 
+                        selected_option=option, 
+                        is_correct=option.is_correct
+                    ))
             except Exception as e:
                 print(f"DEBUG: Quiz Soru/Cevap Hatası -> {str(e)}")
+
+        if answers_to_create:
+            StudentAnswer.objects.bulk_create(answers_to_create)
 
         # 6. Skor hesapla ve kaydet
         total_questions = quiz.questions.count()
@@ -1035,17 +1064,23 @@ class WeeklyPreTestSubmitView(APIView):
         correct_count = 0
         wrong_count = 0
 
-        # 2. Cevapları kontrol et
+        # 2. Cevapları kontrol et (N+1 Sorgusu Önleme)
+        correct_option_ids = set(
+            WeeklyPreTestOption.objects.filter(
+                question__in=questions, 
+                is_correct=True
+            ).values_list('id', flat=True)
+        )
+
         for q in questions:
             # Öğrencinin bu soruya verdiği cevabı bul (Frontend'den gelen yapıya göre kontrol)
-            # Eğer frontend'den direkt {q_id: opt_id} geliyorsa burayı ona göre revize edebilirsin
             user_answer = next((a for a in answers if str(a.get('question_id')) == str(q.id)), None)
             
             is_correct = False
             if user_answer:
-                # Seçilen opsiyonun doğruluğunu kontrol et
-                selected_opt_exists = q.options.filter(id=user_answer.get('option_id'), is_correct=True).exists()
-                if selected_opt_exists:
+                opt_id_raw = user_answer.get('option_id')
+                opt_id = int(opt_id_raw) if opt_id_raw is not None and str(opt_id_raw).isdigit() else None
+                if opt_id and opt_id in correct_option_ids:
                     is_correct = True
                     correct_count += 1
                 else:
@@ -1133,11 +1168,11 @@ class StudentBadgeListView(APIView):
 
         # --- ROZET 2: 2 HAFTA ÜST ÜSTE FULL ---
         try:
-            # Sadece puanı 100 olanları çekiyoruz
+            # Sadece puanı 100 olanları çekiyoruz (N+3 Sorgusu Önleme)
             attempts = StudentQuizAttempt.objects.filter(
                 student=user, 
                 score=100
-            ).order_by('-completed_at')
+            ).select_related('quiz__material__parent_content').order_by('-completed_at')
 
             distinct_weeks = []
             seen_weeks = set()
@@ -1191,6 +1226,12 @@ class SurveyDetailView(APIView):
         from .models import SurveyOption, StudentSurveyResponse, SurveyQuestion
 
         try:
+            q_ids = [item.get('question_id') for item in responses_list if item.get('question_id') is not None]
+            options_lookup = {
+                (opt.question_id, opt.value): opt.option_text
+                for opt in SurveyOption.objects.filter(question_id__in=q_ids)
+            }
+
             for item in responses_list:
                 q_id = item.get('question_id')
                 val = item.get('answer_value')
@@ -1198,19 +1239,7 @@ class SurveyDetailView(APIView):
                 if q_id is None or val is None:
                     continue
 
-                # --- DİNAMİK ŞIK BULMA MANTIĞI ---
-                # Soruya ait şıklar içinden tam olarak o değere (1, 2, 3 vb.) sahip olanı getir
-                opt = SurveyOption.objects.filter(question_id=q_id, value=val).first()
-                
-                if opt:
-                    # Eğer DB'de şık tanımlıysa, hocanın yazdığı metni al
-                    ans_metni = opt.option_text
-                else:
-                    # EĞER ŞIK BULUNAMAZSA:
-                    # Sabit metin koymak yerine, o sorunun o andaki şıklarını debug etmek için
-                    # şık metni yerine uyarı mesajı yazıyoruz. 
-                    # Bu sayede admin panelinde hatanın nedenini anlarsın.
-                    ans_metni = f"Hata: {val} değerine ait şık metni bulunamadı!"
+                ans_metni = options_lookup.get((q_id, val), f"Hata: {val} değerine ait şık metni bulunamadı!")
 
                 responses_to_create.append(StudentSurveyResponse(
                     student=request.user,
@@ -1530,4 +1559,64 @@ class ExportSurveyExcelView(APIView):
         except ValueError as ve:
             return Response({"error": str(ve)}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
-            return Response({"error": f"Sunucu hatası: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({"error": f"Sunucu hatası: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class StudentBootstrapView(APIView):
+    """
+    Öğrenci Paneli için tek istekte başlangıç verilerini konsolide eden yüksek performanslı endpoint.
+    5 ayrı HTTP isteği yerine tek bir API çağrısı yaparak şelale (waterfall) yavaşlığını önler.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        
+        # 1. Tamamlanan materyaller
+        progresses = StudentProgress.objects.filter(student=user).values_list('weekly_content_id', 'current_attempt_round')
+        progress_map = dict(progresses)
+        
+        valid_ids = []
+        if progress_map:
+            completed_records = CompletedMaterial.objects.filter(
+                student=user,
+                material__parent_content_id__in=progress_map.keys()
+            ).values_list('material_id', 'attempt_round', 'material__parent_content_id')
+
+            valid_ids = [
+                str(mat_id) for mat_id, round_num, week_id in completed_records
+                if progress_map.get(week_id) == round_num
+            ]
+
+        # 2. Genel Tanıtım Videosu durumu
+        intro_status = IntroVideoCompletion.objects.filter(student=user, is_watched=True).exists()
+
+        # 3. Ön test soruları ve öğrenci sonucu
+        questions = PreTestQuestion.objects.all().prefetch_related('options')
+        questions_serializer = PreTestQuestionSerializer(questions, many=True)
+        
+        pre_test = PreTestResult.objects.filter(student=user).first()
+        pre_test_result = None
+        if pre_test:
+            pre_test_result = {
+                "is_completed": pre_test.is_completed,
+                "score": pre_test.score,
+                "correct": pre_test.correct_answers,
+                "wrong": pre_test.wrong_answers
+            }
+
+        return Response({
+            "user_info": {
+                "id": user.id,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "email": user.email,
+                "department": user.department,
+                "total_points": getattr(user, 'total_points', 0)
+            },
+            "completed_material_ids": valid_ids,
+            "is_intro_watched": intro_status,
+            "pre_test": {
+                "questions": questions_serializer.data,
+                "result": pre_test_result
+            }
+        }, status=status.HTTP_200_OK)

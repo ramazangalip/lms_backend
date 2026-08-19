@@ -2,6 +2,7 @@ from django.urls import path
 from .views import *
 
 urlpatterns = [
+    path('bootstrap/', StudentBootstrapView.as_view(), name='student-bootstrap'),
     path('pre-test/submit/', PreTestSubmitView.as_view(), name='pre-test-submit'),
     path('pre-test/status/', PreTestStatusView.as_view(), name='pre-test-status'),
     # Hem öğrencilerin listelemesi hem de hocaların içerik eklemesi için ortak endpoint

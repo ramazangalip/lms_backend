@@ -131,8 +131,14 @@ class TimeTracking(models.Model):
     duration_seconds = models.PositiveIntegerField(default=0)
     date = models.DateField(auto_now_add=True)
     
-    # YENİ ALAN: Bu süre hangi turda harcandı?
     attempt_round = models.PositiveIntegerField(default=1)
+
+    class Meta:
+        verbose_name = "Zaman Takibi"
+        verbose_name_plural = "Zaman Takipleri"
+        indexes = [
+            models.Index(fields=['student', 'weekly_content', 'material', 'attempt_round', 'date']),
+        ]
 
     def __str__(self):
         return f"{self.student.email} - Tur {self.attempt_round} - {self.duration_seconds}s"
