@@ -906,13 +906,18 @@ class BulkAcademicReportView(APIView):
                     if att_2:
                         correct_2, wrong_2, score_2 = att_2.correct_answers, att_2.wrong_answers, att_2.score
                     
-                    # Materyal Bazlı Süreler
+                    # Materyal Bazlı Tur 1 & Tur 2 Süreleri
                     for m in week_content.materials.all():
-                        m_dur = sum(t.duration_seconds for t in s_times if t.material_id == m.id)
+                        m_dur_t1 = sum(t.duration_seconds for t in s_times if t.material_id == m.id and t.attempt_round == 1)
+                        m_dur_t2 = sum(t.duration_seconds for t in s_times if t.material_id == m.id and t.attempt_round == 2)
+                        m_dur_total = m_dur_t1 + m_dur_t2
                         material_details.append({
+                            "id": m.id,
                             "title": m.title,
                             "content_type": m.content_type,
-                            "duration_seconds": m_dur
+                            "duration_seconds": m_dur_total,
+                            "duration_seconds_t1": m_dur_t1,
+                            "duration_seconds_t2": m_dur_t2
                         })
 
                 # İlerleme Durumu
@@ -935,6 +940,9 @@ class BulkAcademicReportView(APIView):
                     "is_round_2_started": True if (duration_2 > 0 or att_2) else False
                 })
 
+            total_time_t1 = sum(t.duration_seconds for t in s_times if t.attempt_round == 1)
+            total_time_t2 = sum(t.duration_seconds for t in s_times if t.attempt_round == 2)
+
             # 5. Öğrenci Paketini Ana Listeye Ekle
             report_data.append({
                 "id": str(student.id),
@@ -943,6 +951,8 @@ class BulkAcademicReportView(APIView):
                 "department": student.department,
                 "total_points": getattr(student, 'total_points', 0),
                 "total_time": overall_total_seconds,
+                "total_time_t1": total_time_t1,
+                "total_time_t2": total_time_t2,
                 "weekly_breakdown": weekly_stats,
                 "pre_test_score": pre_test_info,
             })
