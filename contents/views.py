@@ -80,11 +80,28 @@ class WeeklyContentView(APIView):
             if not content:
                 return Response({"detail": "Bu hafta bulunamadı."}, status=status.HTTP_404_NOT_FOUND)
 
-            # Context göndermek hayati önem taşıyor!
-            serializer = WeeklyContentSerializer(content, context={'request': request})
+            context = {'request': request}
+            is_teacher = getattr(user, 'is_teacher', False) or user.is_staff
+            from .models import StudentProgress, IntroVideoCompletion, StudentSurveyResponse, WeeklyPreTestResult, Survey, WeeklyPreTestQuestion, WeeklyContentSchedule
+            
+            surveys = list(Survey.objects.all().prefetch_related('questions__options'))
+            context['surveys_map'] = {s.week_number: s for s in surveys}
+
+            if user.is_authenticated and not is_teacher:
+                context['user_progress_map'] = {p.weekly_content_id: p for p in StudentProgress.objects.filter(student=user)}
+                context['is_intro_watched'] = IntroVideoCompletion.objects.filter(student=user, is_watched=True).exists()
+                context['answered_survey_weeks'] = set(StudentSurveyResponse.objects.filter(student=user).values_list('question__survey__week_number', flat=True))
+                context['passed_entry_weeks'] = set(WeeklyPreTestResult.objects.filter(student=user, is_completed=True).values_list('week_id', flat=True))
+
+            entry_qs = list(WeeklyPreTestQuestion.objects.all().select_related('target_week').prefetch_related('options'))
+            entry_questions_map = {}
+            for q in entry_qs:
+                entry_questions_map.setdefault(q.appearing_week_id, []).append(q)
+            context['entry_questions_map'] = entry_questions_map
+
+            serializer = WeeklyContentSerializer(content, context=context)
             data = serializer.data
 
-            # Hafta 1 özel durumunu manuel eklemeye devam edebiliriz
             if str(week_number) == "1":
                 from .models import PreTestQuestion
                 from .serializers import PreTestQuestionSerializer
@@ -93,21 +110,15 @@ class WeeklyContentView(APIView):
 
             return Response(data, status=status.HTTP_200_OK)
 
-        # 2. LİSTE GÖRÜNÜMÜ - TOPLU SORGU VE CONTEXT OPTİMİZASYONU (N+1 Önleyici)
+        # 2. LİSTE GÖRÜNÜMÜ - HAFİFLETİLMİŞ SORGUSU VE SERIALIZER (Hızlı Yanıt)
         contents = list(WeeklyContent.objects.all().order_by('week_number').prefetch_related(
             'materials',
-            'materials__quiz',
-            'materials__quiz__questions',
-            'materials__quiz__questions__options',
             'flashcards',
-            'schedules',
-            'entry_questions__options',
-            'entry_questions__target_week'
+            'schedules'
         ))
 
         is_teacher = getattr(user, 'is_teacher', False) or user.is_staff
         
-        # Batch context oluşturma (250+ sorguyu 5 sorguya düşürür)
         context = {'request': request}
         context['weeks_by_num'] = {c.week_number: c for c in contents}
 
@@ -127,13 +138,8 @@ class WeeklyContentView(APIView):
             context['answered_survey_weeks'] = set(StudentSurveyResponse.objects.filter(student=user).values_list('question__survey__week_number', flat=True))
             context['passed_entry_weeks'] = set(WeeklyPreTestResult.objects.filter(student=user, is_completed=True).values_list('week_id', flat=True))
         
-        entry_qs = list(WeeklyPreTestQuestion.objects.all().select_related('target_week').prefetch_related('options'))
-        entry_questions_map = {}
-        for q in entry_qs:
-            entry_questions_map.setdefault(q.appearing_week_id, []).append(q)
-        context['entry_questions_map'] = entry_questions_map
-
-        serializer = WeeklyContentSerializer(contents, many=True, context=context)
+        from .serializers import WeeklyContentListSerializer
+        serializer = WeeklyContentListSerializer(contents, many=True, context=context)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     # post metodu aynı kalacak...

@@ -111,29 +111,26 @@ class WeeklyPreTestQuestionSerializer(serializers.ModelSerializer):
         if 'target_week' in data:
             internal_value['target_week'] = data['target_week']
         return internal_value
-class WeeklyContentSerializer(serializers.ModelSerializer):
+class MaterialListSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(required=False) 
+    embed_url = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    min_duration_seconds = serializers.IntegerField(required=False, allow_null=True, default=300)
+
+    class Meta:
+        model = Material
+        fields = ['id', 'content_type', 'embed_url', 'title', 'point_value', 'min_duration_seconds']
+        extra_kwargs = {'id': {'read_only': False, 'required': False}}
+
+class WeeklyContentListSerializer(serializers.ModelSerializer):
     id = serializers.CharField(read_only=True)
-    
-    # DİKKAT: SerializerMethodField yerine direkt Serializer kullanıyoruz.
-    # Bu sayede hoca panelinden gelen 'materials' verisi 'create' metoduna ulaşabilir.
-    materials = MaterialSerializer(many=True, required=False)
+    materials = MaterialListSerializer(many=True, required=False)
     flashcards = FlashcardSerializer(many=True, required=False)
 
-    total_score = serializers.SerializerMethodField() # 1. Burası doğru mu?
+    total_score = serializers.SerializerMethodField()
     is_entry_test_passed = serializers.SerializerMethodField()
     is_entry_test_required = serializers.SerializerMethodField()
-    pre_test_questions = PreTestQuestionSerializer(many=True, required=False, allow_null=True)
-    entry_questions = WeeklyPreTestQuestionSerializer(many=True, required=False)
-
-    survey_questions = serializers.JSONField(write_only=True, required=False, allow_null=True)
-    survey_title = serializers.CharField(write_only=True, required=False, allow_blank=True, allow_null=True)
-    has_survey = serializers.BooleanField(write_only=True, required=False)
-
-    # 2. OKUNABİLİR ALANLAR (Öğrenciye veri dönerken hata almamak için)
-    # HATA BURADAYDI: Bu iki satırın burada tanımlı olması şart!
     is_survey_required = serializers.SerializerMethodField()
-    survey_data = serializers.SerializerMethodField()
-    
+
     title = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     description = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     intro_title = serializers.CharField(required=False, allow_blank=True, allow_null=True)
@@ -156,11 +153,9 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
             'intro_title', 'intro_video_url', 'intro_description',
             'release_date', 'due_date', 'is_locked', 'lock_reason',
             'is_intro_watched', 'materials', 'flashcards', 
-            'progress', 'is_completed', 'pre_test_questions',
-            'entry_questions', 'is_entry_test_passed',
-            'is_entry_test_required','total_score',
-            'is_survey_required', 'survey_data',
-            'survey_questions', 'survey_title', 'has_survey', 'schedules'
+            'progress', 'is_completed',
+            'is_entry_test_passed', 'is_entry_test_required',
+            'total_score', 'is_survey_required', 'schedules'
         ]
 
     def get_effective_dates(self, obj):
@@ -503,6 +498,22 @@ class WeeklyContentSerializer(serializers.ModelSerializer):
         if not instance:
             raise serializers.ValidationError({"error": "Güncelleme sırasında nesne oluşturulamadı."})
         return instance
+
+class WeeklyContentSerializer(WeeklyContentListSerializer):
+    materials = MaterialSerializer(many=True, required=False)
+    pre_test_questions = PreTestQuestionSerializer(many=True, required=False, allow_null=True)
+    entry_questions = WeeklyPreTestQuestionSerializer(many=True, required=False)
+    survey_data = serializers.SerializerMethodField()
+
+    survey_questions = serializers.JSONField(write_only=True, required=False, allow_null=True)
+    survey_title = serializers.CharField(write_only=True, required=False, allow_blank=True, allow_null=True)
+    has_survey = serializers.BooleanField(write_only=True, required=False)
+
+    class Meta(WeeklyContentListSerializer.Meta):
+        fields = WeeklyContentListSerializer.Meta.fields + [
+            'pre_test_questions', 'entry_questions', 'survey_data',
+            'survey_questions', 'survey_title', 'has_survey'
+        ]
 
     def save_all_content(self, validated_data):
         """
