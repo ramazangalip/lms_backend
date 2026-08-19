@@ -1316,13 +1316,15 @@ class SurveyDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, week_number):
-        # İlgili haftanın anketini ve sorularını getirir
+        # İlgili haftanın anketini, sorularını ve şıklarını N+1 olmadan prefetch ile getirir
         try:
-            survey = Survey.objects.get(week_number=week_number)
+            survey = Survey.objects.prefetch_related('questions__options').filter(week_number=week_number).first()
+            if not survey:
+                return Response({"detail": "Bu hafta için anket bulunamadı."}, status=404)
             serializer = SurveySerializer(survey)
             return Response(serializer.data)
-        except Survey.DoesNotExist:
-            return Response({"detail": "Bu hafta için anket bulunamadı."}, status=404)
+        except Exception as e:
+            return Response({"detail": f"Hata: {str(e)}"}, status=500)
 
    # SurveyDetailView içindeki POST metodunu şu şekilde güncelle:
     def post(self, request, week_number):
@@ -1379,6 +1381,11 @@ from rest_framework import permissions
 from django.db.models import Value, CharField
 from django.db.models.functions import Concat
 
+class SurveyAnalyticsPagination(PageNumberPagination):
+    page_size = 3  # Her sayfada 3 öğrencinin anket verisi çekilir
+    page_size_query_param = 'page_size'
+    max_page_size = 50
+
 class AcademicSurveyAnalyticsView(APIView):
     permission_classes = [permissions.IsAdminUser] # Sadece Akademisyen/Admin
 
@@ -1386,18 +1393,33 @@ class AcademicSurveyAnalyticsView(APIView):
         dept = request.query_params.get('department')
         survey_id = request.query_params.get('survey_id') # Frontend'den gelen hafta numarasıdır
         
-        # Sadece 4. hafta ve sonrasındaki anketlerin yanıtlarını çekiyoruz
-        responses = StudentSurveyResponse.objects.filter(
-            question__survey__week_number__gte=4
-        )
+        if not dept or dept == 'all':
+            return Response({"error": "Bölüm seçimi zorunludur."}, status=400)
+
+        # 1. Seçili bölümdeki öğrencileri çek ve 3'er 3'er sayfala
+        students_qs = User.objects.filter(
+            department=dept,
+            is_staff=False,
+            is_teacher=False
+        ).order_by('first_name')
+
+        paginator = SurveyAnalyticsPagination()
+        paginated_students = paginator.paginate_queryset(students_qs, request)
         
-        # Filtreleri uygula
-        if dept:
-            responses = responses.filter(student__department=dept)
+        if paginated_students is None:
+            return paginator.get_paginated_response([])
+
+        student_ids = [s.id for s in paginated_students]
+
+        # 2. Sadece bu 3 öğrenciye ait anket yanıtlarını çek (N+1 önleyen select_related ile)
+        responses = StudentSurveyResponse.objects.filter(
+            student_id__in=student_ids,
+            question__survey__week_number__gte=4
+        ).select_related('student', 'question')
+        
         if survey_id and survey_id != 'all':
             responses = responses.filter(question__survey__week_number=survey_id)
             
-        # Orijinal Ölçek Sabitleri (Veritabanındaki null verileri tamir etmek için koruma kalkanı)
         scale_map = {
             1: "Hiçbir zaman",
             2: "Ender olarak",
@@ -1405,10 +1427,7 @@ class AcademicSurveyAnalyticsView(APIView):
             4: "Sıklıkla",
             5: "Her zaman"
         }
-            
-        # --- KESİN ÇÖZÜM VE SÜPER OPTİMİZASYON ALANI (TIMEOUT ENGELLEYİCİ) ---
-        # N+1 query faciasını önlemek için Concat ile ad ve soyadı veritabanı seviyesinde birleştiriyoruz.
-        # Modelleri ağır nesneler olarak değil, .values() ile sadece ihtiyacımız olan alanları hafif sözlük (dict) olarak çekiyoruz.
+
         raw_responses = responses.annotate(
             full_name=Concat(
                 'student__first_name', Value(' '), 'student__last_name',
@@ -1426,11 +1445,7 @@ class AcademicSurveyAnalyticsView(APIView):
         for r in raw_responses:
             db_text = r['answer_text']
             val = r['answer_value']
-            
-            # Gelen verinin boş string, None veya string "null" olup olmadığını denetliyoruz
             is_valid = db_text and str(db_text).strip() and str(db_text).lower() != 'null'
-            
-            # Eğer veri bozuksa veya boşsa puana göre ölçek karşılığını veriyoruz
             final_text = db_text if is_valid else scale_map.get(val, f"{val} Puan")
 
             report.append({
@@ -1441,7 +1456,7 @@ class AcademicSurveyAnalyticsView(APIView):
                 "category": r['question__category'] if r['question__category'] else "Genel"
             })
             
-        return Response(report)
+        return paginator.get_paginated_response(report)
 
 from rest_framework.response import Response
 from rest_framework.views import APIView
