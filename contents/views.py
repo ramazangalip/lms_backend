@@ -95,7 +95,14 @@ class WeeklyContentView(APIView):
 
         # 2. LİSTE GÖRÜNÜMÜ - TOPLU SORGU VE CONTEXT OPTİMİZASYONU (N+1 Önleyici)
         contents = list(WeeklyContent.objects.all().order_by('week_number').prefetch_related(
-            'materials', 'flashcards', 'materials__quiz', 'materials__quiz__questions'
+            'materials',
+            'materials__quiz',
+            'materials__quiz__questions',
+            'materials__quiz__questions__options',
+            'flashcards',
+            'schedules',
+            'entry_questions__options',
+            'entry_questions__target_week'
         ))
 
         is_teacher = getattr(user, 'is_teacher', False) or user.is_staff
