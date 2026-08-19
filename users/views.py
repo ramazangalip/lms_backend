@@ -85,6 +85,15 @@ class UserProfileView(APIView):
         # get_department_display() Django'nun choices yapısındaki okunaklı metni (sağ tarafı) getirir
         department_name = user.get_department_display() if user.department else "Bölüm Belirtilmemiş"
 
+        last_test_score = None
+        try:
+            from contents.models import StudentQuizAttempt
+            last_attempt = StudentQuizAttempt.objects.filter(student=user).order_by('-completed_at').first()
+            if last_attempt:
+                last_test_score = last_attempt.score
+        except Exception:
+            pass
+
         data = {
             "first_name": user.first_name,
             "last_name": user.last_name,
@@ -92,7 +101,8 @@ class UserProfileView(APIView):
             "total_points": user.total_points,
             "email": user.email,
             "is_student": user.is_student,
-            "is_teacher": user.is_teacher
+            "is_teacher": user.is_teacher,
+            "last_test_score": last_test_score
         }
         return Response(data, status=200)
     
