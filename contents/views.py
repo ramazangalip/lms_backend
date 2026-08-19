@@ -575,6 +575,10 @@ class StudentAnalyticsView(APIView):
                     "wrong_1": att_1.wrong_answers if att_1 else 0,
                     "correct_2": att_2.correct_answers if att_2 else 0,
                     "wrong_2": att_2.wrong_answers if att_2 else 0,
+                    "predicted_score_1": att_1.predicted_score if att_1 else None,
+                    "calibration_gap_1": att_1.calibration_gap if att_1 else None,
+                    "predicted_score_2": att_2.predicted_score if att_2 else None,
+                    "calibration_gap_2": att_2.calibration_gap if att_2 else None,
                     "questions": week_qs,
                     "quiz_results": quiz_results 
                 })
@@ -601,8 +605,26 @@ class StudentAnalyticsView(APIView):
                 } if s_pre_test else None
             })
 
+        # Bölüm Bazlı Özet İstatistikler
+        dept_attempts = StudentQuizAttempt.objects.filter(student__department=department_param)
+        valid_gaps = [a.calibration_gap for a in dept_attempts if a.calibration_gap is not None]
+        avg_calibration_gap = round(sum(valid_gaps) / len(valid_gaps), 1) if valid_gaps else 0.0
+
+        dept_times = TimeTracking.objects.filter(student__department=department_param)
+        t1_total_sec = sum(t.duration_seconds for t in dept_times if t.attempt_round == 1)
+        t2_total_sec = sum(t.duration_seconds for t in dept_times if t.attempt_round == 2)
+        total_dept_students = queryset.count() or 1
+
+        dept_summary = {
+            "avg_calibration_gap": avg_calibration_gap,
+            "avg_t1_duration_seconds": round(t1_total_sec / total_dept_students),
+            "avg_t2_duration_seconds": round(t2_total_sec / total_dept_students),
+        }
+
         # --- 5. SAYFALANDIRILMIŞ YANIT DÖNÜŞÜ ---
-        return paginator.get_paginated_response(final_data)
+        response_data = paginator.get_paginated_response(final_data)
+        response_data.data['dept_summary'] = dept_summary
+        return response_data
 
 # --- YAPAY ZEKA SOHBET ---
 
@@ -645,20 +667,41 @@ class QuizSubmitView(APIView):
         )
         current_round = progress.current_attempt_round
 
-        # 3. Aynı tur içinde mükerrer sınav çözümünü engelle
-        if StudentQuizAttempt.objects.filter(
+        # 3. Aynı tur içinde mükerrer sınav çözümünü kontrol et & yönet
+        existing_attempt = StudentQuizAttempt.objects.filter(
             student=request.user, 
             quiz=quiz, 
             attempt_round=current_round
-        ).exists():
-            return Response(
-                {"error": f"Bu haftanın testini {current_round}. tur için zaten çözdünüz."}, 
-                status=status.HTTP_403_FORBIDDEN
-            )
+        ).first()
 
         answers_data = request.data.get('answers', [])
         correct_count = 0
         
+        predicted_score_raw = request.data.get('predicted_score')
+        predicted_score = None
+        if predicted_score_raw is not None:
+            try:
+                predicted_score = float(predicted_score_raw)
+            except (ValueError, TypeError):
+                predicted_score = None
+
+        if existing_attempt:
+            if predicted_score is not None:
+                existing_attempt.predicted_score = predicted_score
+                existing_attempt.save()
+
+            return Response({
+                "attempt_id": str(existing_attempt.id),
+                "score": existing_attempt.score,
+                "correct": existing_attempt.correct_answers,
+                "wrong": existing_attempt.wrong_answers,
+                "predicted_score": existing_attempt.predicted_score,
+                "calibration_gap": existing_attempt.calibration_gap,
+                "current_round": current_round,
+                "is_completed": progress.is_completed,
+                "message": f"Bu haftanın testini {current_round}. tur için zaten çözdünüz."
+            }, status=status.HTTP_200_OK)
+
         # 4. Sınav denemesini (Attempt) aktif tura göre oluştur
         attempt = StudentQuizAttempt.objects.create(
             student=request.user, 
@@ -666,7 +709,8 @@ class QuizSubmitView(APIView):
             score=0, 
             correct_answers=0, 
             wrong_answers=0,
-            attempt_round=current_round # Hangi turda olduğu kaydediliyor
+            attempt_round=current_round, # Hangi turda olduğu kaydediliyor
+            predicted_score=predicted_score
         )
 
         # 5. Cevapları optimize şekilde işle (N+1 Önleme)
@@ -733,6 +777,8 @@ class QuizSubmitView(APIView):
             "score": attempt.score,
             "correct": attempt.correct_answers,
             "wrong": attempt.wrong_answers,
+            "predicted_score": attempt.predicted_score,
+            "calibration_gap": attempt.calibration_gap,
             "current_round": current_round,
             "is_completed": progress.is_completed
         }, status=status.HTTP_201_CREATED)
@@ -746,10 +792,9 @@ class QuizLastAttemptView(APIView):
             return Response({"error": "Quiz ID eksik"}, status=400)
 
         # 2. SORGULAMA: filter() kullanarak hata (404) fırlatmasını engelliyoruz
-        # Quiz id'si veya bağlı olduğu material üzerinden de arama yapabiliriz
         attempt = StudentQuizAttempt.objects.filter(
             student=request.user, 
-            quiz_id=quiz_id # Buradaki id'nin DB'deki ile tip uyuşmazlığı olabilir
+            quiz_id=quiz_id
         ).order_by('-completed_at').first()
         
         # 3. VERİ VARSA DÖN
@@ -758,11 +803,12 @@ class QuizLastAttemptView(APIView):
                 "id": str(attempt.id), 
                 "score": attempt.score,
                 "correct": attempt.correct_answers,
-                "wrong": attempt.wrong_answers 
+                "wrong": attempt.wrong_answers,
+                "predicted_score": attempt.predicted_score,
+                "calibration_gap": attempt.calibration_gap
             }, status=200)
         
-        # 4. VERİ YOKSA (Buraya düşüyorsa DB'deki ID ile 14 uyuşmuyor demektir)
-        # 404 yerine boş obje dönerek frontend'i kırmıyoruz
+        # 4. VERİ YOKSA
         return Response({}, status=200)
 
 class QuizAIAnalysisView(APIView):
@@ -932,10 +978,14 @@ class BulkAcademicReportView(APIView):
                     "correct": correct_1,
                     "wrong": wrong_1,
                     "score_1": score_1,
+                    "predicted_score_1": att_1.predicted_score if att_1 else None,
+                    "calibration_gap_1": att_1.calibration_gap if att_1 else None,
                     "duration_seconds_2": duration_2,
                     "correct_2": correct_2,
                     "wrong_2": wrong_2,
                     "score_2": score_2,
+                    "predicted_score_2": att_2.predicted_score if att_2 else None,
+                    "calibration_gap_2": att_2.calibration_gap if att_2 else None,
                     "has_quiz": True if (att_1 or att_2) else False,
                     "is_round_2_started": True if (duration_2 > 0 or att_2) else False
                 })

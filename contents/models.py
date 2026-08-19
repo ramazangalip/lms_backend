@@ -213,6 +213,15 @@ class StudentQuizAttempt(models.Model):
     # YENİ ALAN: AI analizi öncesi (1) veya sonrası (2) deneme
     attempt_round = models.PositiveIntegerField(default=1)
 
+    # YENİ ALAN: Üstbilişsel Tahmin / Kalibrasyon
+    predicted_score = models.FloatField(null=True, blank=True, verbose_name="Tahmin Edilen Puan")
+
+    @property
+    def calibration_gap(self):
+        if self.predicted_score is not None:
+            return round(abs(self.predicted_score - self.score), 2)
+        return None
+
     def __str__(self):
         return f"{self.student.first_name} - Tur {self.attempt_round} - %{self.score}"
 
