@@ -460,7 +460,7 @@ from .models import *
 User = get_user_model()
 
 class StudentAnalyticsPagination(PageNumberPagination):
-    page_size = 10  # Her sayfada 10 öğrenci gösterilir
+    page_size = 3  # Her sayfada 3 öğrenci gösterilir
     page_size_query_param = 'page_size'
     max_page_size = 50
 
@@ -690,6 +690,24 @@ class QuizSubmitView(APIView):
                 existing_attempt.predicted_score = predicted_score
                 existing_attempt.save()
 
+            CompletedMaterial.objects.get_or_create(
+                student=request.user, 
+                material=quiz.material,
+                attempt_round=current_round
+            )
+
+            total_mats = weekly_content.materials.count()
+            done_mats = CompletedMaterial.objects.filter(
+                student=request.user, 
+                material__parent_content=weekly_content,
+                attempt_round=current_round
+            ).count()
+            
+            perc = (done_mats / total_mats) * 100 if total_mats > 0 else 0
+            progress.completion_percentage = round(perc, 2)
+            progress.is_completed = (perc >= 100)
+            progress.save()
+
             return Response({
                 "attempt_id": str(existing_attempt.id),
                 "score": existing_attempt.score,
@@ -699,6 +717,8 @@ class QuizSubmitView(APIView):
                 "calibration_gap": existing_attempt.calibration_gap,
                 "current_round": current_round,
                 "is_completed": progress.is_completed,
+                "completion_percentage": progress.completion_percentage,
+                "material_id": str(quiz.material.id),
                 "message": f"Bu haftanın testini {current_round}. tur için zaten çözdünüz."
             }, status=status.HTTP_200_OK)
 
@@ -780,7 +800,9 @@ class QuizSubmitView(APIView):
             "predicted_score": attempt.predicted_score,
             "calibration_gap": attempt.calibration_gap,
             "current_round": current_round,
-            "is_completed": progress.is_completed
+            "is_completed": progress.is_completed,
+            "completion_percentage": progress.completion_percentage,
+            "material_id": str(quiz.material.id)
         }, status=status.HTTP_201_CREATED)
 
 class QuizLastAttemptView(APIView):
@@ -791,11 +813,32 @@ class QuizLastAttemptView(APIView):
         if not quiz_id:
             return Response({"error": "Quiz ID eksik"}, status=400)
 
-        # 2. SORGULAMA: filter() kullanarak hata (404) fırlatmasını engelliyoruz
+        quiz = Quiz.objects.filter(id=str(quiz_id)).first()
+        if not quiz and str(quiz_id).isdigit():
+            quiz = Quiz.objects.filter(id=int(quiz_id)).first()
+
+        current_round = 1
+        if quiz and quiz.material and quiz.material.parent_content:
+            progress = StudentProgress.objects.filter(
+                student=request.user, 
+                weekly_content=quiz.material.parent_content
+            ).first()
+            if progress:
+                current_round = progress.current_attempt_round
+
+        # 2. SORGULAMA: Aktif tura (attempt_round) ait son sınav denemesini getir
         attempt = StudentQuizAttempt.objects.filter(
             student=request.user, 
-            quiz_id=quiz_id
+            quiz_id=str(quiz_id),
+            attempt_round=current_round
         ).order_by('-completed_at').first()
+
+        if not attempt:
+            attempt = StudentQuizAttempt.objects.filter(
+                student=request.user, 
+                quiz_id=quiz_id,
+                attempt_round=current_round
+            ).order_by('-completed_at').first()
         
         # 3. VERİ VARSA DÖN
         if attempt:
@@ -805,7 +848,8 @@ class QuizLastAttemptView(APIView):
                 "correct": attempt.correct_answers,
                 "wrong": attempt.wrong_answers,
                 "predicted_score": attempt.predicted_score,
-                "calibration_gap": attempt.calibration_gap
+                "calibration_gap": attempt.calibration_gap,
+                "attempt_round": attempt.attempt_round
             }, status=200)
         
         # 4. VERİ YOKSA
