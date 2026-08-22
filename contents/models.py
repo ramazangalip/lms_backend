@@ -465,3 +465,22 @@ class SurveyOption(models.Model):
 
     def __str__(self):
         return f"{self.option_text} ({self.value})"
+
+
+class AcademicEmailLog(models.Model):
+    department = models.CharField(max_length=100, verbose_name="Bölüm Kodu")
+    week_number = models.IntegerField(verbose_name="Raporlanan Hafta")
+    sent_at = models.DateTimeField(auto_now_add=True, verbose_name="Gönderilme Tarihi")
+    recipients = models.TextField(verbose_name="Alıcı E-postalar")
+    student_count = models.IntegerField(default=0, verbose_name="Raporlanan Öğrenci Sayısı")
+    status = models.CharField(max_length=20, default="SUCCESS", verbose_name="Durum")
+    error_message = models.TextField(blank=True, null=True, verbose_name="Hata Mesajı")
+
+    class Meta:
+        verbose_name = "Akademisyen E-posta Rapor Günlüğü"
+        verbose_name_plural = "Akademisyen E-posta Rapor Günlükleri"
+        unique_together = ('department', 'week_number')
+        ordering = ['-sent_at']
+
+    def __str__(self):
+        return f"{self.department} - Hafta {self.week_number} ({self.sent_at.strftime('%d.%m.%Y %H:%M')})"

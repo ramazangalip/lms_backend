@@ -1458,6 +1458,29 @@ class AcademicSurveyAnalyticsView(APIView):
             
         return paginator.get_paginated_response(report)
 
+class SendAcademicReportManualView(APIView):
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request):
+        department = request.data.get('department')
+        week_number = request.data.get('week_number')
+        force = request.data.get('force', True)
+
+        if not department or not week_number:
+            return Response({"error": "Bölüm kodu (department) ve hafta numarası (week_number) zorunludur."}, status=400)
+
+        try:
+            week_number = int(week_number)
+        except ValueError:
+            return Response({"error": "Geçersiz hafta numarası."}, status=400)
+
+        from contents.services.email_report_service import send_department_academic_report
+        success, msg = send_department_academic_report(department, week_number, force=force)
+
+        if success:
+            return Response({"detail": msg, "status": "success"}, status=200)
+        return Response({"error": msg, "status": "failed"}, status=400)
+
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework import permissions
