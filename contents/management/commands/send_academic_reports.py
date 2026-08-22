@@ -2,8 +2,11 @@ import sys
 from datetime import datetime, time, timedelta
 from django.core.management.base import BaseCommand
 from django.utils import timezone
+from django.contrib.auth import get_user_model
 from contents.models import WeeklyContentSchedule, WeeklyContent
 from contents.services.email_report_service import send_department_academic_report, DEPARTMENT_NAMES
+
+User = get_user_model()
 
 if hasattr(sys.stdout, 'reconfigure'):
     try:
@@ -50,46 +53,55 @@ class Command(BaseCommand):
             return
 
         # Otomatik Zamanlayıcı Kontrolü
-        # Her bölüm için tüm haftalık takvimleri çek (W >= 2)
-        schedules = WeeklyContentSchedule.objects.select_related('weekly_content').filter(
-            weekly_content__week_number__gte=2,
-            release_date__isnull=False
-        )
+        # 1. Sistemdeki tüm bölümleri dinamik tespit et (User model choices + DB'deki aktif tüm bölümler)
+        db_departments = set(User.objects.exclude(department__isnull=True).exclude(department='').values_list('department', flat=True))
+        choice_departments = set(dict(getattr(User, 'DEPARTMENT_CHOICES', [])).keys())
+        all_departments = sorted(list(db_departments.union(choice_departments)))
+
+        # 2. Tüm 2 ve üzeri haftalık içerikleri çek (W >= 2)
+        weekly_contents = WeeklyContent.objects.filter(week_number__gte=2)
+
+        # 3. Bölüm bazlı özel takvimleri haritalandır (N+1 engellemek için)
+        custom_schedules = {
+            (s.department, s.weekly_content.week_number): s.release_date
+            for s in WeeklyContentSchedule.objects.filter(release_date__isnull=False).select_related('weekly_content')
+        }
 
         sent_count = 0
         skipped_count = 0
 
-        for sched in schedules:
-            dept = sched.department
-            w_next = sched.weekly_content.week_number
-            report_week = w_next - 1  # 2. Hafta açılıyorsa 1. Haftanın raporu gidecek
-            rel_date = sched.release_date
+        self.stdout.write(f"Sistemdeki {len(all_departments)} bölüm için tarih kontrolleri yapılıyor: {', '.join(all_departments)}")
 
-            # Gelecek haftanın açılış tarihinden 1 gün önceki saat 20:00 hesabı
-            release_dt_local = timezone.localtime(rel_date)
-            target_date = release_dt_local.date() - timedelta(days=1)
-            
-            # Target Trigger DateTime: 1 gün önce saat 20:00:00
-            trigger_dt = timezone.make_aware(
-                datetime.combine(target_date, time(20, 0, 0)),
-                timezone.get_current_timezone()
-            )
+        for dept in all_departments:
+            for wc in weekly_contents:
+                w_next = wc.week_number
+                report_week = w_next - 1
 
-            # Zaman kontrolü: Şu anki zaman trigger_dt'yi geçmiş mi?
-            if now >= trigger_dt or force:
-                self.stdout.write(self.style.MIGRATE_HEADING(
-                    f"Kontrol Ediliyor: Bölüm={dept}, Rapor Haftası={report_week} (Gelecek Hafta {w_next} Açılış: {release_dt_local.strftime('%d.%m.%Y %H:%M')}, Tetikleme Saat: {trigger_dt.strftime('%d.%m.%Y %H:%M')})"
-                ))
+                # Bölüme özel tarih varsa onu al, yoksa haftanın genel aktifleşme tarihini al
+                rel_date = custom_schedules.get((dept, w_next)) or wc.release_date
 
-                success, msg = send_department_academic_report(dept, report_week, force=force)
-                if success:
-                    sent_count += 1
-                    self.stdout.write(self.style.SUCCESS(f"  └─ BAŞARILI: {msg}"))
+                if not rel_date:
+                    continue
+
+                # Gelecek haftanın açılış tarihinden 1 gün önceki saat 20:00 hesabı
+                release_dt_local = timezone.localtime(rel_date)
+                target_date = release_dt_local.date() - timedelta(days=1)
+                
+                trigger_dt = timezone.make_aware(
+                    datetime.combine(target_date, time(20, 0, 0)),
+                    timezone.get_current_timezone()
+                )
+
+                # Zaman kontrolü: Şu anki zaman trigger_dt'yi geçmiş mi?
+                if now >= trigger_dt or force:
+                    success, msg = send_department_academic_report(dept, report_week, force=force)
+                    if success:
+                        sent_count += 1
+                        self.stdout.write(self.style.SUCCESS(f"  [BAŞARILI] Bölüm={dept}, Rapor Haftası={report_week}: {msg}"))
+                    else:
+                        skipped_count += 1
+                        self.stdout.write(self.style.NOTICE(f"  [BİLGİ] Bölüm={dept}, Rapor Haftası={report_week}: {msg}"))
                 else:
                     skipped_count += 1
-                    self.stdout.write(self.style.NOTICE(f"  └─ {msg}"))
-            else:
-                skipped_count += 1
-                self.stdout.write(f"Zamanı Gelmedi: Bölüm={dept}, Hafta={report_week} (Zamanı: {trigger_dt.strftime('%d.%m.%Y %H:%M')})")
 
         self.stdout.write(self.style.SUCCESS(f"İşlem Tamamlandı. Gönderilen: {sent_count}, Atlanan/Bekleyen: {skipped_count}"))
