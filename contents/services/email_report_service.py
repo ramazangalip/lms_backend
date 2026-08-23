@@ -1,4 +1,5 @@
 import os
+import io
 import logging
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
@@ -10,8 +11,14 @@ from contents.models import (
     StudentQuizAttempt,
     StudentSurveyResponse,
     StudentProgress,
+    StudentQuestion,
     AcademicEmailLog
 )
+
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -35,10 +42,23 @@ def format_seconds(seconds):
         return f"{hrs} sa {remaining_mins} dk"
     return f"{mins} dk"
 
+def fix_tr_pdf_chars(str_val):
+    """ReportLab varsayılan font uyumluluğu için Türkçe karakter dönüştürücü."""
+    if not str_val:
+        return ""
+    tr_map = {
+        'ı': 'i', 'ğ': 'g', 'ü': 'u', 'ş': 's', 'ö': 'o', 'ç': 'c',
+        'İ': 'I', 'Ğ': 'G', 'Ü': 'U', 'Ş': 'S', 'Ö': 'O', 'Ç': 'C'
+    }
+    res = str(str_val)
+    for tr_c, latin_c in tr_map.items():
+        res = res.replace(tr_c, latin_c)
+    return res
+
 def generate_department_weekly_analytics(department, week_number):
     """
     Belirli bir bölüm ve hafta için N+1 sorgusu olmadan yüksek performansla
-    tüm öğrenci analitiklerini (T1/T2 süreleri, tahmin/gerçek skor, anketler vb.) toplar.
+    tüm öğrenci analitiklerini (T1/T2 süreleri, tahmin/gerçek skor, anketler, chatbot vb.) toplar.
     """
     dept_label = DEPARTMENT_NAMES.get(department, str(department).upper())
     
@@ -96,6 +116,13 @@ def generate_department_weekly_analytics(department, week_number):
         )
     )
 
+    all_questions = list(
+        StudentQuestion.objects.filter(
+            student_id__in=student_ids,
+            weekly_content=week_content
+        )
+    )
+
     # 4. Bellek içi öğrenci bazlı veri paketleme
     students_data = []
 
@@ -105,6 +132,7 @@ def generate_department_weekly_analytics(department, week_number):
         s_attempts = [a for a in all_attempts if a.student_id == s_id]
         s_surveys = [srv for srv in all_surveys if srv.student_id == s_id]
         s_prog = next((p for p in all_progress if p.student_id == s_id), None)
+        s_questions = [q for q in all_questions if q.student_id == s_id]
 
         # Materyal Bazlı Tur 1 (T1) ve Tur 2 (T2) Süreleri
         materials_breakdown = []
@@ -164,6 +192,14 @@ def generate_department_weekly_analytics(department, week_number):
                 "value": srv.answer_value
             })
 
+        # Chatbot Yanıtları / Soruları
+        chatbot_questions = []
+        for q in s_questions:
+            chatbot_questions.append({
+                "text": q.question_text,
+                "created_at": q.created_at.strftime('%d.%m.%Y %H:%M') if q.created_at else "-"
+            })
+
         students_data.append({
             "id": student.id,
             "full_name": f"{student.first_name} {student.last_name}".strip().upper() or student.username,
@@ -176,7 +212,8 @@ def generate_department_weekly_analytics(department, week_number):
             "overall_time_str": format_seconds(overall_time_sec),
             "materials_breakdown": materials_breakdown,
             "quiz_info": quiz_info,
-            "survey_answers": survey_answers
+            "survey_answers": survey_answers,
+            "chatbot_questions": chatbot_questions
         })
 
     return {
@@ -243,6 +280,12 @@ def build_academic_report_html(report_data):
             </div>
 
             <div class="content">
+                <div style="background:#eff6ff; border:1px solid #bfdbfe; color:#1e40af; padding:12px 16px; border-radius:8px; font-size:12px; margin-bottom:20px; font-weight:600;">
+                    📎 Bu e-postanın ekinde <strong>3 Adet Detaylı PDF Raporu</strong> yer almaktadır:<br>
+                    1. <strong>Genel Öğrenci Performansı PDF</strong> (Materyal Süreleri, Sınav & Kalibrasyon)<br>
+                    2. <strong>Haftalık Anket Yanıtları PDF</strong> (Ölçek Yanıtları ve Detaylar)<br>
+                    3. <strong>Chatbot & Yapay Zeka Etkileşim PDF</strong> (Soru ve Etkileşim Analitiği)
+                </div>
     """
 
     if not students_data:
@@ -253,7 +296,6 @@ def build_academic_report_html(report_data):
             r1 = q_info['r1']
             r2 = q_info['r2']
 
-            # Sınav skoru ve kalibrasyon stringi hazırlama
             quiz_str_r1 = "Çözülmedi"
             if r1['score'] is not None:
                 pred = f"%{int(r1['predicted'])}" if r1['predicted'] is not None else "Yok"
@@ -304,58 +346,7 @@ def build_academic_report_html(report_data):
                     </div>
                 """
 
-            # Materyal Bazlı Detay Tablosu
-            if s['materials_breakdown']:
-                html += """
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Materyal Başlığı</th>
-                                <th>Tür</th>
-                                <th>Tur 1 (T1) Süre</th>
-                                <th>Tur 2 (T2) Süre</th>
-                                <th>Toplam Süre</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                """
-                for m in s['materials_breakdown']:
-                    html += f"""
-                        <tr>
-                            <td>{m['title']}</td>
-                            <td style="text-transform:uppercase; font-size:9px; color:#64748b;">{m['type']}</td>
-                            <td>{m['t1_str']}</td>
-                            <td>{m['t2_str']}</td>
-                            <td><strong>{m['total_str']}</strong></td>
-                        </tr>
-                    """
-                html += "</tbody></table>"
-
-            # Anket Cevapları Tablosu
-            if s['survey_answers']:
-                html += """
-                    <div style="margin-top:14px; font-weight:800; font-size:10px; color:#475569; text-transform:uppercase;">Haftalık Anket Yanıtları</div>
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Soru Maddesi</th>
-                                <th>Kategori</th>
-                                <th>Ölçek Yanıtı</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                """
-                for srv in s['survey_answers']:
-                    html += f"""
-                        <tr>
-                            <td>{srv['question']}</td>
-                            <td>{srv['category']}</td>
-                            <td><strong style="color:#6b21a8;">{srv['answer_text']}</strong></td>
-                        </tr>
-                    """
-                html += "</tbody></table>"
-
-            html += "</div>" # student-card sonu
+            html += "</div>"
 
     html += f"""
             </div>
@@ -380,6 +371,7 @@ def build_academic_report_text(report_data):
     text = f"--- {dept_label.upper()} {week_num}. HAFTA ÖĞRENCİ ANALİTİK RAPORU ---\n"
     text += f"Hafta: {week_title}\n"
     text += f"Tarih: {timezone.now().strftime('%d.%m.%Y %H:%M')}\n\n"
+    text += f"E-posta ekinde 3 Adet PDF Raporu yer almaktadır.\n\n"
 
     for idx, s in enumerate(students_data, 1):
         text += f"{idx}. {s['full_name']} (Puan: {s['total_points']} | İlerleme: %{int(s['progress_percentage'])})\n"
@@ -398,9 +390,351 @@ def build_academic_report_text(report_data):
     return text
 
 
+# --- 3 ADET AYRI PDF JENERATÖRÜ ---
+
+def get_report_styles():
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        'DocTitle',
+        parent=styles['Normal'],
+        fontName='Helvetica-Bold',
+        fontSize=15,
+        leading=18,
+        textColor=colors.HexColor('#43186C')
+    )
+    subtitle_style = ParagraphStyle(
+        'DocSubTitle',
+        parent=styles['Normal'],
+        fontName='Helvetica',
+        fontSize=10,
+        leading=13,
+        textColor=colors.HexColor('#64748B')
+    )
+    section_header_style = ParagraphStyle(
+        'SectionHeader',
+        parent=styles['Normal'],
+        fontName='Helvetica-Bold',
+        fontSize=11,
+        leading=14,
+        textColor=colors.HexColor('#1E1B4B')
+    )
+    body_style = ParagraphStyle(
+        'Body',
+        parent=styles['Normal'],
+        fontName='Helvetica',
+        fontSize=8.5,
+        leading=11,
+        textColor=colors.HexColor('#334155')
+    )
+    bold_body_style = ParagraphStyle(
+        'BoldBody',
+        parent=styles['Normal'],
+        fontName='Helvetica-Bold',
+        fontSize=8.5,
+        leading=11,
+        textColor=colors.HexColor('#1E1B4B')
+    )
+    return title_style, subtitle_style, section_header_style, body_style, bold_body_style
+
+
+def generate_general_performance_pdf(report_data):
+    """
+    PDF 1: Genel Öğrenci Performans, Materyal Süreleri ve Sınav Kalibrasyonu Raporu
+    """
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    title_style, subtitle_style, section_header_style, body_style, bold_body_style = get_report_styles()
+
+    elements = []
+    dept_label = fix_tr_pdf_chars(report_data['department_label'])
+    week_num = report_data['week_number']
+    week_title = fix_tr_pdf_chars(report_data['week_title'])
+    student_count = report_data['student_count']
+    students_data = report_data['students_data']
+
+    # Header
+    elements.append(Paragraph(f"BINGOL UNIVERSITESI LMS — {dept_label.upper()}", title_style))
+    elements.append(Paragraph(f"PDF 1: {week_num}. Hafta Genel Ogrenci Performans ve Izleme Raporu", subtitle_style))
+    elements.append(Spacer(1, 8))
+    elements.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor('#43186C'), spaceAfter=12))
+
+    # Meta Table
+    meta_data = [[
+        Paragraph(f"<b>Bolum:</b> {dept_label}", body_style),
+        Paragraph(f"<b>Raporlanan Hafta:</b> {week_title}", body_style),
+        Paragraph(f"<b>Ogrenci Sayisi:</b> {student_count}", body_style)
+    ]]
+    meta_table = Table(meta_data, colWidths=[180, 200, 150])
+    meta_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F8FAFC')),
+        ('PADDING', (0, 0), (-1, -1), 6),
+        ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#E2E8F0')),
+    ]))
+    elements.append(meta_table)
+    elements.append(Spacer(1, 12))
+
+    if not students_data:
+        elements.append(Paragraph("Bu bolumde kayitli ogrenci verisi bulunamadi.", body_style))
+    else:
+        for idx, s in enumerate(students_data, 1):
+            s_name = fix_tr_pdf_chars(s['full_name'])
+            prog = int(s['progress_percentage'])
+            pts = s['total_points']
+            
+            s_header_data = [[
+                Paragraph(f"<b>#{idx} {s_name}</b>", section_header_style),
+                Paragraph(f"<b>Ilerleme:</b> %{prog} | <b>Puan:</b> {pts}", bold_body_style)
+            ]]
+            s_header_table = Table(s_header_data, colWidths=[350, 180])
+            s_header_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F3E8FF')),
+                ('PADDING', (0, 0), (-1, -1), 5),
+            ]))
+            elements.append(s_header_table)
+            elements.append(Spacer(1, 4))
+
+            q_info = s['quiz_info']
+            r1 = q_info['r1']
+            r2 = q_info['r2']
+
+            r1_str = "Cozulmedi"
+            if r1['score'] is not None:
+                pred = f"%{int(r1['predicted'])}" if r1['predicted'] is not None else "Yok"
+                gap = f"+/-{r1['gap']}" if r1['gap'] is not None else "-"
+                r1_str = f"Gercek: %{int(r1['score'])} | On Tahmin: {pred} (Sapma: {gap}) [{r1['correct']}D / {r1['wrong']}Y]"
+
+            r2_str = "2. Tur Yok"
+            if r2['score'] is not None:
+                pred2 = f"%{int(r2['predicted'])}" if r2['predicted'] is not None else "Yok"
+                gap2 = f"+/-{r2['gap']}" if r2['gap'] is not None else "-"
+                r2_str = f"Gercek: %{int(r2['score'])} | On Tahmin: {pred2} (Sapma: {gap2}) [{r2['correct']}D / {r2['wrong']}Y]"
+
+            metrics_data = [[
+                Paragraph(f"<b>Materyal Calisma Suresi:</b><br/>T1: {s['total_t1_str']} | T2: {s['total_t2_str']} (Toplam: {s['overall_time_str']})", body_style),
+                Paragraph(f"<b>1. Tur Sinav & Kalibrasyon:</b><br/>{fix_tr_pdf_chars(r1_str)}", body_style)
+            ]]
+            if r2['score'] is not None:
+                metrics_data.append([
+                    Paragraph(f"<b>2. Tur (Pekistirme) Sinavi:</b><br/>{fix_tr_pdf_chars(r2_str)}", body_style),
+                    Paragraph("", body_style)
+                ])
+
+            metrics_table = Table(metrics_data, colWidths=[265, 265])
+            metrics_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F8FAFC')),
+                ('PADDING', (0, 0), (-1, -1), 5),
+                ('BOX', (0, 0), (-1, -1), 0.5, colors.HexColor('#E2E8F0')),
+            ]))
+            elements.append(metrics_table)
+            elements.append(Spacer(1, 4))
+
+            if s['materials_breakdown']:
+                mat_rows = [[
+                    Paragraph("<b>Materyal Basligi</b>", bold_body_style),
+                    Paragraph("<b>Tur</b>", bold_body_style),
+                    Paragraph("<b>Tur 1 (T1)</b>", bold_body_style),
+                    Paragraph("<b>Tur 2 (T2)</b>", bold_body_style),
+                    Paragraph("<b>Toplam Sure</b>", bold_body_style)
+                ]]
+                for m in s['materials_breakdown']:
+                    mat_rows.append([
+                        Paragraph(fix_tr_pdf_chars(m['title']), body_style),
+                        Paragraph(fix_tr_pdf_chars(m['type'].upper()), body_style),
+                        Paragraph(m['t1_str'], body_style),
+                        Paragraph(m['t2_str'], body_style),
+                        Paragraph(f"<b>{m['total_str']}</b>", body_style)
+                    ])
+
+                mat_table = Table(mat_rows, colWidths=[210, 80, 80, 80, 80])
+                mat_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#F1F5F9')),
+                    ('PADDING', (0, 0), (-1, -1), 4),
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#E2E8F0')),
+                ]))
+                elements.append(mat_table)
+
+            elements.append(Spacer(1, 10))
+
+    doc.build(elements)
+    pdf_bytes = buffer.getvalue()
+    buffer.close()
+    return pdf_bytes
+
+
+def generate_survey_responses_pdf(report_data):
+    """
+    PDF 2: Haftalık Anket Yanıtları ve Ölçek Analizi Raporu
+    """
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    title_style, subtitle_style, section_header_style, body_style, bold_body_style = get_report_styles()
+
+    elements = []
+    dept_label = fix_tr_pdf_chars(report_data['department_label'])
+    week_num = report_data['week_number']
+    week_title = fix_tr_pdf_chars(report_data['week_title'])
+    student_count = report_data['student_count']
+    students_data = report_data['students_data']
+
+    # Header
+    elements.append(Paragraph(f"BINGOL UNIVERSITESI LMS — {dept_label.upper()}", title_style))
+    elements.append(Paragraph(f"PDF 2: {week_num}. Hafta Anket Yanitlari ve Olcek Analiz Raporu", subtitle_style))
+    elements.append(Spacer(1, 8))
+    elements.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor('#0284C7'), spaceAfter=12))
+
+    meta_data = [[
+        Paragraph(f"<b>Bolum:</b> {dept_label}", body_style),
+        Paragraph(f"<b>Anket Haftasi:</b> {week_title}", body_style),
+        Paragraph(f"<b>Ogrenci Sayisi:</b> {student_count}", body_style)
+    ]]
+    meta_table = Table(meta_data, colWidths=[180, 200, 150])
+    meta_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#F0F9FF')),
+        ('PADDING', (0, 0), (-1, -1), 6),
+        ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#BAE6FD')),
+    ]))
+    elements.append(meta_table)
+    elements.append(Spacer(1, 12))
+
+    has_any_survey = False
+    for idx, s in enumerate(students_data, 1):
+        if not s['survey_answers']:
+            continue
+
+        has_any_survey = True
+        s_name = fix_tr_pdf_chars(s['full_name'])
+        
+        s_header_data = [[
+            Paragraph(f"<b>#{idx} {s_name}</b>", section_header_style),
+            Paragraph(f"<b>Yanitlanan Soru Sayisi:</b> {len(s['survey_answers'])}", bold_body_style)
+        ]]
+        s_header_table = Table(s_header_data, colWidths=[350, 180])
+        s_header_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#E0F2FE')),
+            ('PADDING', (0, 0), (-1, -1), 5),
+        ]))
+        elements.append(s_header_table)
+        elements.append(Spacer(1, 4))
+
+        srv_rows = [[
+            Paragraph("<b>Anket Soru Maddesi</b>", bold_body_style),
+            Paragraph("<b>Kategori / Alt Boyut</b>", bold_body_style),
+            Paragraph("<b>Olcek Yaniti</b>", bold_body_style)
+        ]]
+        for srv in s['survey_answers']:
+            srv_rows.append([
+                Paragraph(fix_tr_pdf_chars(srv['question']), body_style),
+                Paragraph(fix_tr_pdf_chars(srv['category']), body_style),
+                Paragraph(f"<b>{fix_tr_pdf_chars(srv['answer_text'])}</b>", bold_body_style)
+            ])
+
+        srv_table = Table(srv_rows, colWidths=[300, 110, 120])
+        srv_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#F1F5F9')),
+            ('PADDING', (0, 0), (-1, -1), 4),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#CBD5E1')),
+        ]))
+        elements.append(srv_table)
+        elements.append(Spacer(1, 10))
+
+    if not has_any_survey:
+        elements.append(Paragraph("Bu haftaya ait doldurulmus anket yaniti bulunamadi.", body_style))
+
+    doc.build(elements)
+    pdf_bytes = buffer.getvalue()
+    buffer.close()
+    return pdf_bytes
+
+
+def generate_chatbot_analytics_pdf(report_data):
+    """
+    PDF 3: Chatbot & Yapay Zeka Etkileşim ve Soru Analitiği Raporu
+    """
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    title_style, subtitle_style, section_header_style, body_style, bold_body_style = get_report_styles()
+
+    elements = []
+    dept_label = fix_tr_pdf_chars(report_data['department_label'])
+    week_num = report_data['week_number']
+    week_title = fix_tr_pdf_chars(report_data['week_title'])
+    student_count = report_data['student_count']
+    students_data = report_data['students_data']
+
+    # Header
+    elements.append(Paragraph(f"BINGOL UNIVERSITESI LMS — {dept_label.upper()}", title_style))
+    elements.append(Paragraph(f"PDF 3: {week_num}. Hafta Chatbot ve Yapay Zeka Etkilesim Raporu", subtitle_style))
+    elements.append(Spacer(1, 8))
+    elements.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor('#059669'), spaceAfter=12))
+
+    # Toplam Chatbot Soruları Sayısı
+    total_cb_questions = sum(len(s['chatbot_questions']) for s in students_data)
+
+    meta_data = [[
+        Paragraph(f"<b>Bolum:</b> {dept_label}", body_style),
+        Paragraph(f"<b>Hafta:</b> {week_title}", body_style),
+        Paragraph(f"<b>Toplam AI Sorusu:</b> {total_cb_questions}", body_style)
+    ]]
+    meta_table = Table(meta_data, colWidths=[180, 200, 150])
+    meta_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#ECFDF5')),
+        ('PADDING', (0, 0), (-1, -1), 6),
+        ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#A7F3D0')),
+    ]))
+    elements.append(meta_table)
+    elements.append(Spacer(1, 12))
+
+    has_any_cb = False
+    for idx, s in enumerate(students_data, 1):
+        if not s['chatbot_questions']:
+            continue
+
+        has_any_cb = True
+        s_name = fix_tr_pdf_chars(s['full_name'])
+        
+        s_header_data = [[
+            Paragraph(f"<b>#{idx} {s_name}</b>", section_header_style),
+            Paragraph(f"<b>Yapay Zekaya Sorulan Soru:</b> {len(s['chatbot_questions'])} Soru", bold_body_style)
+        ]]
+        s_header_table = Table(s_header_data, colWidths=[350, 180])
+        s_header_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#D1FAE5')),
+            ('PADDING', (0, 0), (-1, -1), 5),
+        ]))
+        elements.append(s_header_table)
+        elements.append(Spacer(1, 4))
+
+        cb_rows = [[
+            Paragraph("<b>Ogrencinin Yapay Zekaya Sordugu Soru Metni</b>", bold_body_style),
+            Paragraph("<b>Soru Tarihi ve Saati</b>", bold_body_style)
+        ]]
+        for q in s['chatbot_questions']:
+            cb_rows.append([
+                Paragraph(fix_tr_pdf_chars(q['text']), body_style),
+                Paragraph(q['created_at'], body_style)
+            ])
+
+        cb_table = Table(cb_rows, colWidths=[380, 150])
+        cb_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#F1F5F9')),
+            ('PADDING', (0, 0), (-1, -1), 4),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#CBD5E1')),
+        ]))
+        elements.append(cb_table)
+        elements.append(Spacer(1, 10))
+
+    if not has_any_cb:
+        elements.append(Paragraph("Bu haftaya ait öğrencilerin chatbot / yapay zeka ile etkileşim kaydı bulunamadı.", body_style))
+
+    doc.build(elements)
+    pdf_bytes = buffer.getvalue()
+    buffer.close()
+    return pdf_bytes
+
+
 def send_department_academic_report(department, week_number, force=False):
     """
-    Belirtilen bölüm ve hafta için raporu hazırlar ve akademisyenlere e-posta atar.
+    Belirtilen bölüm ve hafta için raporu hazırlar, 3 AYRI PDF ekler ve akademisyenlere e-posta atar.
     Mükerrer gönderimi engellemek için AcademicEmailLog tablosuna kaydeder.
     """
     # 1. Mükerrer Gönderim Kontrolü
@@ -435,7 +769,7 @@ def send_department_academic_report(department, week_number, force=False):
     student_count = report_data['student_count']
 
     # 4. E-posta İçeriğini Üret
-    subject = f"📊 [BÜ-LMS] {dept_label} — {week_number}. Hafta Öğrenci Gelişim ve Performans Raporu"
+    subject = f"📊 [BÜ-LMS] {dept_label} — {week_number}. Hafta Öğrenci Gelişim ve Performans Raporu (3 PDF Ekli)"
     html_content = build_academic_report_html(report_data)
     text_content = build_academic_report_text(report_data)
 
@@ -449,9 +783,32 @@ def send_department_academic_report(department, week_number, force=False):
             to=recipients
         )
         msg.attach_alternative(html_content, "text/html")
+
+        # 5. 3 ADET AYRI PDF EKLENTİSİ OLUŞTUR VE E-POSTAYA BAĞLA
+        try:
+            safe_dept = dept_label.replace(' ', '_').replace('Ç', 'C').replace('ç', 'c').replace('Ğ', 'G').replace('ğ', 'g').replace('İ', 'I').replace('ı', 'i').replace('Ö', 'O').replace('ö', 'o').replace('Ş', 'S').replace('ş', 's').replace('Ü', 'U').replace('ü', 'u')
+            
+            # PDF 1: Genel Öğrenci Performans ve İlerleme Raporu
+            pdf1_bytes = generate_general_performance_pdf(report_data)
+            pdf1_name = f"1_Genel_Performans_Raporu_{safe_dept}_Hafta_{week_number}.pdf"
+            msg.attach(pdf1_name, pdf1_bytes, "application/pdf")
+
+            # PDF 2: Haftalık Anket Yanıtları Raporu
+            pdf2_bytes = generate_survey_responses_pdf(report_data)
+            pdf2_name = f"2_Anket_Yanitlari_Raporu_{safe_dept}_Hafta_{week_number}.pdf"
+            msg.attach(pdf2_name, pdf2_bytes, "application/pdf")
+
+            # PDF 3: Chatbot & Yapay Zeka Etkileşim Raporu
+            pdf3_bytes = generate_chatbot_analytics_pdf(report_data)
+            pdf3_name = f"3_Chatbot_Etkilesim_Raporu_{safe_dept}_Hafta_{week_number}.pdf"
+            msg.attach(pdf3_name, pdf3_bytes, "application/pdf")
+
+        except Exception as pdf_err:
+            logger.error(f"PDF eklentileri oluşturulurken hata ({department} Hafta {week_number}): {pdf_err}")
+
         msg.send(fail_silently=False)
 
-        # 5. Başarılı Gönderim Logu
+        # 6. Başarılı Gönderim Logu
         AcademicEmailLog.objects.update_or_create(
             department=department,
             week_number=week_number,
@@ -462,8 +819,8 @@ def send_department_academic_report(department, week_number, force=False):
                 'error_message': None
             }
         )
-        logger.info(f"Başarıyla e-posta raporu gönderildi: {department} Hafta {week_number} -> {recipients}")
-        return True, f"Rapor {len(recipients)} akademisyene başarıyla iletildi."
+        logger.info(f"Başarıyla e-posta ve 3 PDF raporu gönderildi: {department} Hafta {week_number} -> {recipients}")
+        return True, f"3 adet PDF eklentili rapor {len(recipients)} akademisyene başarıyla iletildi."
 
     except Exception as e:
         err_msg = str(e)
