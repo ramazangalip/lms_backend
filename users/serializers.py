@@ -3,7 +3,11 @@ from django.contrib.auth.password_validation import validate_password
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from .models import User, EmailOTP
 
+from datetime import timedelta
+
 class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
+    remember_me = serializers.BooleanField(required=False, default=False)
+
     @classmethod
     def get_token(cls, user):
         token = super().get_token(user)
@@ -15,6 +19,23 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
         token['full_name'] = f"{user.first_name} {user.last_name}"
         
         return token
+
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        remember_me = self.initial_data.get('remember_me', False)
+
+        if remember_me:
+            refresh = self.get_token(self.user)
+            refresh.set_exp(lifetime=timedelta(days=30))
+
+            access = refresh.access_token
+            access.set_exp(lifetime=timedelta(days=30))
+
+            data['refresh'] = str(refresh)
+            data['access'] = str(access)
+            data['remember_me'] = True
+
+        return data
 
 class RegisterSerializer(serializers.ModelSerializer):
     code = serializers.CharField(write_only=True, required=True)
