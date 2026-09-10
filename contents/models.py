@@ -157,12 +157,14 @@ class CompletedMaterial(models.Model):
 
 class StudentQuestion(models.Model):
     student = models.ForeignKey(User, on_delete=models.CASCADE)
-    weekly_content = models.ForeignKey(WeeklyContent, on_delete=models.CASCADE)
+    weekly_content = models.ForeignKey(WeeklyContent, on_delete=models.CASCADE, null=True, blank=True)
     question_text = models.TextField()
+    ai_response_text = models.TextField(blank=True, null=True, verbose_name="Yapay Zeka Yanıtı")
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"{self.student.first_name} - Hafta {self.weekly_content.week_number}"
+        week_num = self.weekly_content.week_number if self.weekly_content else "Genel"
+        return f"{self.student.first_name or self.student.username} - Hafta {week_num}"
 
 class Quiz(models.Model):
     """Her bir test materyali için ana başlık"""

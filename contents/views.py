@@ -22,6 +22,12 @@ import os
 import json
 from rest_framework import status, permissions
 from rest_framework.pagination import PageNumberPagination
+from .services.analysis_service import (
+    generate_test_analysis_report, 
+    extract_missing_concepts, 
+    call_openrouter_or_llm,
+    search_knowledge_base_for_chat
+)
 
 # --- YARDIMCI FONKSİYONLAR ---
 
@@ -631,24 +637,93 @@ class StudentAnalyticsView(APIView):
 class AIChatView(APIView):
     permission_classes = [IsAuthenticated]
 
+    def get(self, request):
+        """Öğrencinin haftaya özel veya genel geçmiş chatbot sohbet mesajlarını getirir."""
+        week_id = request.query_params.get("weekly_content_id") or request.query_params.get("week_id")
+        
+        if week_id and str(week_id).lower() not in ['null', 'undefined', '']:
+            questions = StudentQuestion.objects.filter(
+                student=request.user, 
+                weekly_content_id=week_id
+            ).order_by('created_at')
+        else:
+            questions = StudentQuestion.objects.filter(student=request.user).order_by('created_at')
+
+        # Eski kayıtlarda ai_response_text eksikse veritabanında otomatik tamamla
+        for q in questions:
+            if not q.ai_response_text or not q.ai_response_text.strip():
+                q.ai_response_text = search_knowledge_base_for_chat(q.question_text)
+                q.save(update_fields=['ai_response_text'])
+
+        serializer = StudentQuestionSerializer(questions, many=True)
+        return Response({"history": serializer.data}, status=200)
+
     def post(self, request):
         user_message = request.data.get("message")
         week_id = request.data.get("weekly_content_id")
-        if not user_message: return Response({"error": "Mesaj boş olamaz."}, status=400)
+        if not user_message or not str(user_message).strip(): 
+            return Response({"error": "Mesaj boş olamaz."}, status=400)
 
+        # 1. Hafta nesnesi (varsa)
+        weekly_content = None
+        if week_id and str(week_id).lower() not in ['null', 'undefined', '']:
+            try:
+                weekly_content = WeeklyContent.objects.get(id=week_id)
+            except Exception as e:
+                print(f"[UYARI] WeeklyContent bulunamadı: {str(e)}")
+
+        # 2. Geçmiş Sohbet Diyaloglarını Haftaya Özel Çek (Hafıza Bağlamı)
+        if weekly_content:
+            past_questions = list(
+                StudentQuestion.objects.filter(student=request.user, weekly_content=weekly_content)
+                .order_by('-created_at')[:10]
+            )
+        else:
+            past_questions = list(
+                StudentQuestion.objects.filter(student=request.user)
+                .order_by('-created_at')[:10]
+            )
+        past_questions.reverse()
+
+        # 3. Öğrenci sorusunu veritabanında oluştur
+        sq_instance = None
         try:
-            p_id, loc = init_vertex_ai()
-            model = GenerativeModel(f"projects/{p_id}/locations/{loc}/endpoints/981343814604029952")
-            response = model.generate_content(user_message)
-            ai_response_text = response.text
+            sq_instance = StudentQuestion.objects.create(
+                student=request.user, 
+                weekly_content=weekly_content, 
+                question_text=user_message
+            )
+        except Exception as e:
+            print(f"[UYARI] StudentQuestion oluşturulamadı: {str(e)}")
 
-            if week_id:
-                try:
-                    weekly_content = WeeklyContent.objects.get(id=week_id)
-                    StudentQuestion.objects.create(student=request.user, weekly_content=weekly_content, question_text=user_message)
-                except: pass
-            return Response({"response": ai_response_text}, status=200)
-        except Exception as e: return Response({"response": "Asistan şu an yanıt veremiyor."}, status=500)
+        # 4. Çok katmanlı AI & Bilgi Bankası Çağrısı (Haftalık sohbet hafızasıyla)
+        try:
+            prompt = (
+                "Sen Bingöl Üniversitesi LMS sisteminde öğrencilere Bilgi Teknolojileri dersinde yardımcı olan, "
+                "nazik, anlaşılır ve yapıcı bir Yapay Zeka Öğrenme Asistanısın.\n\n"
+                f"Öğrencinin Sorduğu Soru: {user_message}\n\n"
+                "Lütfen net, öğretici, adım adım ve uygulamalı açıklamalar içeren bir yanıt ver."
+            )
+            ai_response_text = call_openrouter_or_llm(
+                prompt=prompt, 
+                ogrenci_tam_ad=None,
+                is_test_analysis=False,
+                user_message=user_message,
+                chat_history=past_questions
+            )
+        except Exception as e:
+            print(f"[HATA] AIChatView LLM çağrı hatası: {str(e)}")
+            ai_response_text = search_knowledge_base_for_chat(user_message, chat_history=past_questions)
+
+        # 5. AI Cevabını veritabanına kaydet
+        if sq_instance:
+            sq_instance.ai_response_text = ai_response_text
+            sq_instance.save(update_fields=['ai_response_text'])
+
+        return Response({
+            "response": ai_response_text,
+            "id": sq_instance.id if sq_instance else None
+        }, status=200)
 
 # --- QUIZ (SINAV) SİSTEMİ ---
 
@@ -855,6 +930,8 @@ class QuizLastAttemptView(APIView):
         # 4. VERİ YOKSA
         return Response({}, status=200)
 
+from .services.analysis_service import generate_test_analysis_report, extract_missing_concepts, call_openrouter_or_llm
+
 class QuizAIAnalysisView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -867,42 +944,81 @@ class QuizAIAnalysisView(APIView):
             weekly_content = attempt.quiz.material.parent_content
             progress = StudentProgress.objects.get(student=request.user, weekly_content=weekly_content)
             
-            # --- 2. TUR TETİKLEME MANTIĞI (Aynı kalıyor) ---
+            # --- 2. TUR TETİKLEME MANTIĞI ---
             if attempt.wrong_answers > 0 and progress.current_attempt_round == 1:
                 progress.current_attempt_round = 2
                 progress.completion_percentage = 0  
                 progress.save()
 
-            # 3. VERİTABANINDAN HAZIR ANALİZLERİ TOPLA
-            # Öğrencinin yanlış cevapladığı soruları çekiyoruz
+            # 3. Yanlış cevapları ve ID'leri topla
             wrong_answers = StudentAnswer.objects.filter(
                 attempt=attempt, 
                 is_correct=False
             ).select_related('question')
 
-            combined_analysis = ""
-            user_name = request.user.first_name if request.user.first_name else request.user.username
-            
-            combined_analysis += f"Merhaba {user_name}, bu testteki performansını senin için analiz ettim:\n\n"
-
+            yanlis_ids = []
             for ans in wrong_answers:
-                # Soru bazlı hazır açıklamayı (explanation) çekiyoruz
-                q_text = ans.question.question_text
-                # Eğer explanation boşsa bir fallback metni koyuyoruz
-                q_analysis = ans.question.explanation if ans.question.explanation else "Bu konuyla ilgili ders notlarını tekrar gözden geçirmelisin."
-                
-                combined_analysis += f"• SORU: {q_text}\n"
-                combined_analysis += f"• ANALİZ: {q_analysis}\n\n"
+                # Soru metni içinde veya id ile eşleşme
+                yanlis_ids.append(f"BT{weekly_content.week_number}-000{ans.question.id}-D1")
 
-            combined_analysis += "\nŞimdi 2. tura geçerek bu eksiklerini tamamlayabilirsin. Başarılar!"
+            hafta_konu = f"{weekly_content.week_number}. Hafta - {weekly_content.title or 'Bilgi Teknolojilerine Giriş'}"
+            bolum = request.user.get_department_display() if hasattr(request.user, 'get_department_display') and callable(request.user.get_department_display) else getattr(request.user, 'department', '')
+
+            total_q = attempt.correct_answers + attempt.wrong_answers
+            report = generate_test_analysis_report(
+                user=request.user,
+                bolum=bolum,
+                hafta_konu=hafta_konu,
+                dogru_sayisi=attempt.correct_answers,
+                yanlis_sayisi=attempt.wrong_answers,
+                bos_sayisi=0,
+                toplam_soru=total_q if total_q > 0 else 10,
+                yanlis_soru_id_listesi=yanlis_ids
+            )
 
             return Response({
-                "ai_feedback": combined_analysis, # İsim aynı kalsın ki frontend kırılmasın
+                "ai_feedback": report["pedagogical_report"], # İsim aynı kalsın ki frontend kırılmasın
+                "analysis_report": report,
                 "current_round": progress.current_attempt_round
             }, status=200)
             
         except Exception as e: 
-            return Response({"error": "Analiz verisi alınamadı."}, status=500)
+            return Response({"error": f"Analiz verisi alınamadı: {str(e)}"}, status=500)
+
+class TestAnalysisReportView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        """
+        Öğrenci testi tamamladığında CSV eksik kavram eşleştirme 
+        ve LLM pedagojik analiz raporu üreten endpoint.
+        """
+        user = request.user
+        data = request.data or {}
+
+        hafta_konu = data.get('hafta_konu', 'Bilgi Teknolojilerine Giriş')
+        dogru_sayisi = int(data.get('dogru_sayisi', 0))
+        yanlis_sayisi = int(data.get('yanlis_sayisi', 0))
+        bos_sayisi = int(data.get('bos_sayisi', 0))
+        toplam_soru = int(data.get('toplam_soru', dogru_sayisi + yanlis_sayisi + bos_sayisi))
+        yanlis_soru_id_listesi = data.get('yanlis_soru_id_listesi', [])
+
+        bolum = getattr(user, 'department', '')
+        if hasattr(user, 'get_department_display') and callable(user.get_department_display):
+            bolum = user.get_department_display()
+
+        report_data = generate_test_analysis_report(
+            user=user,
+            bolum=bolum,
+            hafta_konu=hafta_konu,
+            dogru_sayisi=dogru_sayisi,
+            yanlis_sayisi=yanlis_sayisi,
+            bos_sayisi=bos_sayisi,
+            toplam_soru=toplam_soru,
+            yanlis_soru_id_listesi=yanlis_soru_id_listesi
+        )
+
+        return Response(report_data, status=status.HTTP_200_OK)
 
 from rest_framework.views import APIView
 from rest_framework.response import Response

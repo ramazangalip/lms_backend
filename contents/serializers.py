@@ -1047,3 +1047,19 @@ class AcademicSurveyResultSerializer(serializers.ModelSerializer):
     class Meta:
         model = StudentSurveyResponse
         fields = ['student_name', 'department', 'question_text', 'answer', 'created_at']
+
+class StudentQuestionSerializer(serializers.ModelSerializer):
+    student_name = serializers.SerializerMethodField()
+    week_number = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StudentQuestion
+        fields = ['id', 'question_text', 'ai_response_text', 'created_at', 'weekly_content', 'week_number', 'student_name']
+
+    def get_student_name(self, obj):
+        if hasattr(obj.student, 'get_full_name') and callable(obj.student.get_full_name):
+            return obj.student.get_full_name() or obj.student.username
+        return getattr(obj.student, 'username', '')
+
+    def get_week_number(self, obj):
+        return obj.weekly_content.week_number if obj.weekly_content else None
