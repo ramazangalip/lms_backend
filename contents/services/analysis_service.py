@@ -47,6 +47,146 @@ def get_knowledge_base():
     _KNOWLEDGE_BASE_CACHE = kb
     return _KNOWLEDGE_BASE_CACHE
 
+def find_matching_csv_row(item_id_str, question_text, kb, item_index=1):
+    """
+    Soru ID'si veya metni üzerinden CSV Bilgi Bankasında en uygun row'u bulur.
+    1. Doğrudan ID eşleşmesi (kb.get(item_id_str))
+    2. Soru metni üzerinden kelime çakışması (token overlap)
+    3. Hafta bazlı filtreleme ve soru sırasına göre benzersiz sıralama
+    """
+    if not kb:
+        return None
+
+    item_id_str = str(item_id_str).strip()
+    if item_id_str in kb:
+        return kb[item_id_str]
+
+    # 1. Hafta numarasını tespit et (örn: BT4-000561-D1 -> hafta = 4)
+    hafta_num = None
+    match_w = re.search(r'BT(\d+)', item_id_str, re.IGNORECASE)
+    if match_w:
+        try:
+            hafta_num = int(match_w.group(1))
+        except ValueError:
+            pass
+
+    # 2. Soru metni varsa kelime benzerliğiyle arama yap
+    if question_text and len(str(question_text).strip()) > 5:
+        q_text_clean = re.sub(r'[^\w\s]', ' ', str(question_text).lower())
+        tokens = [w for w in q_text_clean.split() if w not in STOP_WORDS and len(w) > 2]
+        
+        if tokens:
+            best_match = None
+            best_score = 0
+            for k, row in kb.items():
+                row_hafta = str(row.get('hafta', '')).strip()
+                if hafta_num and row_hafta and row_hafta != str(hafta_num):
+                    continue
+
+                score = 0
+                soru_csv = row.get('soru', '').lower()
+                konu_csv = row.get('konu', '').lower()
+                kavram_csv = row.get('ilgili_kavramlar', '').lower()
+
+                for token in tokens:
+                    stem = token[:4] if len(token) >= 4 else token
+                    if token in soru_csv or stem in soru_csv:
+                        score += 10
+                    if token in kavram_csv or stem in kavram_csv:
+                        score += 8
+                    if token in konu_csv or stem in konu_csv:
+                        score += 5
+
+                if score > best_score:
+                    best_score = score
+                    best_match = row
+
+            if best_match and best_score >= 5:
+                return best_match
+
+    # 3. Hafta biliniyorsa, o haftanın CSV kayıtları arasından benzersiz sıra indeksi seç
+    if hafta_num:
+        week_rows = [r for k, r in kb.items() if str(r.get('hafta', '')).strip() == str(hafta_num)]
+        if week_rows:
+            clean_id = re.sub(r'-D\d+$', '', item_id_str, flags=re.IGNORECASE)
+            digits = re.findall(r'\d+', clean_id)
+            if len(digits) >= 2:
+                q_num = int(digits[-1])
+                return week_rows[(q_num + item_index - 1) % len(week_rows)]
+            return week_rows[(item_index - 1) % len(week_rows)]
+
+    # 4. Tüm CSV kayıtları arasından benzersiz seçim
+    all_rows = list(kb.values())
+    if all_rows:
+        return all_rows[(item_index - 1) % len(all_rows)]
+
+    return None
+
+def extract_wrong_questions_detailed_guidance(yanlis_soru_id_listesi):
+    """
+    Öğrencinin haftalık testte yanlış yaptığı her bir soru için CSV Bilgi Bankası 
+    veya soru veritabanı üzerinden soruya özel 2-3 cümlelik yönlendirmeler oluşturur.
+    """
+    if not yanlis_soru_id_listesi:
+        return [], "Tüm sorular doğru yanıtlandı, yanlış yapılan soru bulunmamaktadır."
+
+    kb = get_knowledge_base()
+    guidance_items = []
+    guidance_lines = []
+
+    for idx, item in enumerate(yanlis_soru_id_listesi, 1):
+        item_id_str = str(item.get('id') if isinstance(item, dict) else item).strip()
+        custom_question_text = item.get('question_text') if isinstance(item, dict) else None
+        custom_explanation = item.get('explanation') if isinstance(item, dict) else None
+
+        row = find_matching_csv_row(item_id_str, custom_question_text, kb, item_index=idx)
+
+        if row:
+            konu = row.get('konu', '').strip() or "Bilişim Teknolojileri"
+            soru = custom_question_text or row.get('soru', '').strip() or f"Soru {idx}"
+            ilgili_kavramlar = row.get('ilgili_kavramlar', '').strip() or konu
+            yanlis_bilinen = row.get('yanlis_bilinen', '').strip() or "kavram tanımının yanlış yorumlanmasıdır."
+            nihai_cevap = (row.get('nihai_cevap_kisa') or row.get('kisa_cevap') or row.get('nihai_cevap_uzun') or '').strip()
+
+            sentence1 = f"{konu} konusuna ait '{soru}' sorusunda {ilgili_kavramlar} kavramları ölçülmektedir."
+            sentence2 = f"Bu konuda en sık düşülen yanılgı: {yanlis_bilinen} Doğru yaklaşım ise {nihai_cevap}."
+            sentence3 = f"Bu soruyu pekiştirmek için ders materyallerinde {konu} başlığı altındaki tanımları ve uygulama adımlarını tekrar gözden geçirmeniz önerilir."
+            
+            full_text = f"{sentence1} {sentence2} {sentence3}"
+
+            guidance_items.append({
+                "question_index": idx,
+                "question_id": item_id_str,
+                "konu": konu,
+                "soru": soru,
+                "guidance_text": full_text
+            })
+            guidance_lines.append(f"📌 **Soru {idx} [{konu}]:** {full_text}")
+        elif custom_explanation:
+            full_text = custom_explanation.strip()
+            guidance_items.append({
+                "question_index": idx,
+                "question_id": item_id_str,
+                "konu": "Test Sorusu",
+                "soru": custom_question_text or f"Soru {idx}",
+                "guidance_text": full_text
+            })
+            guidance_lines.append(f"📌 **Soru {idx}:** {full_text}")
+        else:
+            q_label = custom_question_text if custom_question_text else f"Soru {item_id_str}"
+            full_text = f"'{q_label}' sorusunda ölçülen temel kavramların ve çözüm adımlarının tekrar incelenmesi önerilir. Soruyu yanıtlarken seçeneğin teorik gerekçesine dikkat ediniz. İlgili haftanın özet materyallerindeki örnek senaryolara odaklanarak bilginizi pekiştirebilirsiniz."
+            guidance_items.append({
+                "question_index": idx,
+                "question_id": item_id_str,
+                "konu": "Bilişim Teknolojileri",
+                "soru": q_label,
+                "guidance_text": full_text
+            })
+            guidance_lines.append(f"📌 **Soru {idx}:** {full_text}")
+
+    guidance_block = "\n\n".join(guidance_lines)
+    return guidance_items, guidance_block
+
 def extract_missing_concepts(yanlis_soru_id_listesi):
     """
     Öğrencinin yanlış yaptığı soru ID'lerini CSV Bilgi Bankası ile eşleştirerek 
@@ -58,9 +198,11 @@ def extract_missing_concepts(yanlis_soru_id_listesi):
     kb = get_knowledge_base()
     concept_lines = []
 
-    for item_id in yanlis_soru_id_listesi:
-        item_id_str = str(item_id).strip()
-        row = kb.get(item_id_str)
+    for item in yanlis_soru_id_listesi:
+        item_id_str = str(item.get('id') if isinstance(item, dict) else item).strip()
+        custom_q = item.get('question_text') if isinstance(item, dict) else None
+        
+        row = find_matching_csv_row(item_id_str, custom_q, kb)
         if row:
             konu = row.get('konu', '').strip()
             ilgili_kavramlar = row.get('ilgili_kavramlar', '').strip()
@@ -68,14 +210,15 @@ def extract_missing_concepts(yanlis_soru_id_listesi):
             line = f"- Konu: {konu} (İlgili Kavramlar: {ilgili_kavramlar}) | Yaygın Yanılgı: {yanlis_bilinen}"
             concept_lines.append(line)
         else:
-            concept_lines.append(f"- Soru ID: {item_id_str} | Detaylı konu kavramı sistem veritabanında incelendi.")
+            q_label = custom_q if custom_q else item_id_str
+            concept_lines.append(f"- Soru: {q_label} | Temel Bilişim Teknolojileri kavramı incelendi.")
 
     if not concept_lines:
         return "Tüm sorular doğru yanıtlandı, kavram yanılgısı tespit edilmedi."
 
     return "\n".join(concept_lines)
 
-def build_llm_prompt(ogrenci_tam_ad, bolum, hafta_konu, dogru, yanlis, bos, toplam, eksik_kavramlar_blogu):
+def build_llm_prompt(ogrenci_tam_ad, bolum, hafta_konu, dogru, yanlis, bos, toplam, eksik_kavramlar_blogu, soru_yonlendirmeleri_blogu=""):
     """
     İstenen pedagojik System Prompt şablonunu oluşturur.
     """
@@ -92,16 +235,17 @@ GİRDİLER:
 - Tespit Edilen Eksik Kavramlar ve Yanılgılar:
 {eksik_kavramlar_blogu}
 
+- Yanlış Yapılan Sorular ve Detaylı Yönlendirmeler:
+{soru_yonlendirmeleri_blogu}
+
 KURALLAR VE FORMAT:
 1. İLK CÜMLE ZORUNLULUĞU:
 Metne MUTLAKA istisnasız olarak "Merhaba {ogrenci_tam_ad}," hitabıyla başla ve testi tamamladığı için nazik bir tebrik ifadesi kullan.
 2. GENEL DEĞERLENDİRME:
 Öğrencinin başarı yüzdesini ve harcadığı emeği motive edici, yapıcı bir dille özetle.
-3. GÜÇLÜ YÖNLER:
-Doğru yaptığı konular üzerinden başarısını pekiştir.
-4. KAVRAM YANILGILARI VE GELİŞİM ALANLARI:
-Yukarıda listelenen eksik kavramları ve "Yaygın Yanılgı" açıklamalarını temel alarak öğrencinin hatasını anlamasını sağla. Ezber bilgi verme; neden karıştırıldığını günlük hayattan 1 somut analoji veya örnekle izah et.
-5. SOKRATİK DÜŞÜNME SORUSU:
+3. YANLIŞ YAPILAN HER SORUYA ÖZEL 2-3 CÜMLELİK YÖNLENDİRME:
+Öğrencinin yanlış yaptığı HER BİR soru için (yukarıda listelenen yanlış sorular bölümünü temel alarak) o soruya özel tam 2-3 cümlelik öğretici ve açıklayıcı bir yönlendirme kaleme al. Kesinlikle tüm sorular için aynı jenerik cümleyi tekrarlama! Her soru numarası ve konusuna özgü ayrı, özgün 2-3 cümlelik açıklamalar yap.
+4. SOKRATİK DÜŞÜNME SORUSU:
 Analizin sonuna, eksik kalan kavramı pekiştirmesi için düşündürücü tek bir Sokratik yönlendirme sorusu ekle ve bir sonraki ünite için başarılar dileyerek bitir."""
 
     return prompt
@@ -334,6 +478,9 @@ def generate_test_analysis_report(user, bolum, hafta_konu, dogru_sayisi, yanlis_
     # 1. Adım A: CSV Kavram Çıkarma Servisi
     eksik_kavramlar_blogu = extract_missing_concepts(yanlis_soru_id_listesi)
 
+    # 1. Adım A2: Yanlış sorulara özel 2-3 cümlelik yönlendirme çıkarma
+    guidance_items, soru_yonlendirmeleri_blogu = extract_wrong_questions_detailed_guidance(yanlis_soru_id_listesi)
+
     # 2. Adım B: LLM Prompt İnşası
     prompt = build_llm_prompt(
         ogrenci_tam_ad=ogrenci_tam_ad,
@@ -343,14 +490,26 @@ def generate_test_analysis_report(user, bolum, hafta_konu, dogru_sayisi, yanlis_
         yanlis=yanlis_sayisi,
         bos=bos_sayisi,
         toplam=toplam_soru,
-        eksik_kavramlar_blogu=eksik_kavramlar_blogu
+        eksik_kavramlar_blogu=eksik_kavramlar_blogu,
+        soru_yonlendirmeleri_blogu=soru_yonlendirmeleri_blogu
     )
+
+    fallback_report = None
+    if yanlis_sayisi > 0:
+        fallback_report = (
+            f"Merhaba {ogrenci_tam_ad},\n\n"
+            f"Haftalık değerlendirme testini başarıyla tamamladığın için tebrik ederim! Gösterdiğin çaba ve kararlılık öğrenme sürecinin en değerli parçasıdır.\n\n"
+            f"**Genel Değerlendirme:** Testteki sorulara verdiğin yanıtlar konuyu özümseme gayretini gösteriyor. Yanlış cevapladığın soruları aşağıda yer alan yönlendirmelerle tekrarlayarak eksiklerini rahatlıkla tamamlayabilirsin.\n\n"
+            f"**Yanlış Yapılan Sorulara Özel Yönlendirmeler:**\n{soru_yonlendirmeleri_blogu}\n\n"
+            f"**Sokratik Düşünme Sorusu:** Sence bu haftaki sorularda karşılaştığın kavramlar günlük hayatındaki dijital araçlarda nasıl karşılık buluyor? Düşüncelerini bir sonraki ünitede pekiştirmeni diler, başarılar dilerim!"
+        )
 
     # 3. LLM Çağrısı
     pedagogical_report = call_openrouter_or_llm(
         prompt=prompt, 
         ogrenci_tam_ad=ogrenci_tam_ad,
-        is_test_analysis=True
+        is_test_analysis=True,
+        fallback_text=fallback_report
     )
 
     basari_orani = round((dogru_sayisi / toplam_soru) * 100, 1) if toplam_soru > 0 else 0.0
@@ -367,5 +526,6 @@ def generate_test_analysis_report(user, bolum, hafta_konu, dogru_sayisi, yanlis_
             "basari_orani": basari_orani
         },
         "eksik_kavramlar_blogu": eksik_kavramlar_blogu,
+        "wrong_questions_guidance": guidance_items,
         "pedagogical_report": pedagogical_report
     }

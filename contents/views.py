@@ -958,8 +958,14 @@ class QuizAIAnalysisView(APIView):
 
             yanlis_ids = []
             for ans in wrong_answers:
-                # Soru metni içinde veya id ile eşleşme
-                yanlis_ids.append(f"BT{weekly_content.week_number}-000{ans.question.id}-D1")
+                # Soru metni, açıklaması ve ID'si ile nesne yapısı
+                q_text = getattr(ans.question, 'question_text', '')
+                q_exp = getattr(ans.question, 'explanation', '')
+                yanlis_ids.append({
+                    "id": f"BT{weekly_content.week_number}-000{ans.question.id}-D1",
+                    "question_text": q_text,
+                    "explanation": q_exp
+                })
 
             hafta_konu = f"{weekly_content.week_number}. Hafta - {weekly_content.title or 'Bilgi Teknolojilerine Giriş'}"
             bolum = request.user.get_department_display() if hasattr(request.user, 'get_department_display') and callable(request.user.get_department_display) else getattr(request.user, 'department', '')
