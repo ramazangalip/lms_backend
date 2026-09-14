@@ -144,6 +144,8 @@ class WeeklyContentListSerializer(serializers.ModelSerializer):
     is_intro_watched = serializers.SerializerMethodField()
     is_locked = serializers.SerializerMethodField()
     lock_reason = serializers.SerializerMethodField()
+    is_temporarily_unlocked = serializers.SerializerMethodField()
+    temporary_unlock_until = serializers.SerializerMethodField()
     week_number = serializers.IntegerField(validators=[])
 
     class Meta:
@@ -152,6 +154,7 @@ class WeeklyContentListSerializer(serializers.ModelSerializer):
             'id', 'week_number', 'title', 'description', 
             'intro_title', 'intro_video_url', 'intro_description',
             'release_date', 'due_date', 'is_locked', 'lock_reason',
+            'is_temporarily_unlocked', 'temporary_unlock_until',
             'is_intro_watched', 'materials', 'flashcards', 
             'progress', 'is_completed',
             'is_entry_test_passed', 'is_entry_test_required',
@@ -207,6 +210,12 @@ class WeeklyContentListSerializer(serializers.ModelSerializer):
                 }
                 for s in instance.schedules.all()
             }
+
+        # KONTROL: Eğer haftalık ön test veya anket zorunluysa ve geçici kilit açık değilse materyalleri gizle
+        if (ret.get('is_entry_test_required') or ret.get('is_survey_required')) and not ret.get('is_temporarily_unlocked'):
+            ret['materials'] = []
+            ret['flashcards'] = []
+
         return ret
     # --- YENİ: ANKET GEREKLİ Mİ KONTROLÜ ---
     # --- 1. ANKET KİLİT MANTIĞI ---
@@ -337,11 +346,39 @@ class WeeklyContentListSerializer(serializers.ModelSerializer):
         progress_obj = StudentProgress.objects.filter(student=request.user, weekly_content=obj).first()
         return progress_obj.is_completed if progress_obj else False
 
+    def get_active_temporary_unlock(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user or not request.user.is_authenticated:
+            return None
+        
+        temporary_unlocks_map = self.context.get('temporary_unlocks_map')
+        if temporary_unlocks_map is not None:
+            return temporary_unlocks_map.get(obj.id)
+        
+        from .models import TemporaryUnlock
+        now = timezone.now()
+        return TemporaryUnlock.objects.filter(
+            student=request.user, 
+            week=obj, 
+            unlock_until__gt=now
+        ).first()
+
+    def get_is_temporarily_unlocked(self, obj):
+        tu = self.get_active_temporary_unlock(obj)
+        return tu is not None
+
+    def get_temporary_unlock_until(self, obj):
+        tu = self.get_active_temporary_unlock(obj)
+        return tu.unlock_until.isoformat() if tu else None
+
     def get_is_locked(self, obj):
         now = timezone.now()
         request = self.context.get('request')
 
         if request and request.user and (getattr(request.user, 'is_teacher', False) or request.user.is_staff):
+            return False
+
+        if self.get_is_temporarily_unlocked(obj):
             return False
 
         rel_date, due_date = self.get_effective_dates(obj)
@@ -380,6 +417,9 @@ class WeeklyContentListSerializer(serializers.ModelSerializer):
     def get_lock_reason(self, obj):
         request = self.context.get('request')
         if not request or not request.user or not request.user.is_authenticated or getattr(request.user, 'is_teacher', False) or request.user.is_staff:
+            return None
+
+        if self.get_is_temporarily_unlocked(obj):
             return None
 
         now = timezone.now()

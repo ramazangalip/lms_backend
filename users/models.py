@@ -14,8 +14,8 @@ class User(AbstractUser):
     ]
 
     email = models.EmailField(unique=True, verbose_name="E-posta Adresi")
-    is_teacher = models.BooleanField(default=False, verbose_name="Akademisyen mi?")
-    is_student = models.BooleanField(default=False, verbose_name="Öğrenci mi?")
+    is_teacher = models.BooleanField(default=False, db_index=True, verbose_name="Akademisyen mi?")
+    is_student = models.BooleanField(default=False, db_index=True, verbose_name="Öğrenci mi?")
     
 
     department = models.CharField(
@@ -23,9 +23,10 @@ class User(AbstractUser):
         choices=DEPARTMENT_CHOICES, 
         null=True, 
         blank=True, 
+        db_index=True,
         verbose_name="Bölüm"
     )
-    total_points = models.PositiveIntegerField(default=0, verbose_name="Toplam Puan")
+    total_points = models.PositiveIntegerField(default=0, db_index=True, verbose_name="Toplam Puan")
     
     is_staff = models.BooleanField(default=False)
     USERNAME_FIELD = 'email'
@@ -38,6 +39,11 @@ class User(AbstractUser):
     class Meta:
         verbose_name = "Kullanıcı"
         verbose_name_plural = "Kullanıcılar"
+        indexes = [
+            models.Index(fields=['department', 'is_student']),
+            models.Index(fields=['is_student', '-total_points']),
+            models.Index(fields=['department', 'is_student', '-total_points']),
+        ]
 
 
 class EmailOTP(models.Model):
@@ -46,7 +52,7 @@ class EmailOTP(models.Model):
     """
     email = models.EmailField(unique=True, verbose_name="E-posta")
     code = models.CharField(max_length=6, verbose_name="Doğrulama Kodu")
-    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Oluşturulma Tarihi")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True, verbose_name="Oluşturulma Tarihi")
 
     def __str__(self):
         return f"{self.email} - {self.code}"

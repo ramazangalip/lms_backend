@@ -132,6 +132,8 @@ class WeeklyContentView(APIView):
             context['is_intro_watched'] = IntroVideoCompletion.objects.filter(student=user, is_watched=True).exists()
             context['answered_survey_weeks'] = set(StudentSurveyResponse.objects.filter(student=user).values_list('question__survey__week_number', flat=True))
             context['passed_entry_weeks'] = set(WeeklyPreTestResult.objects.filter(student=user, is_completed=True).values_list('week_id', flat=True))
+            now = timezone.now()
+            context['temporary_unlocks_map'] = {tu.week_id: tu for tu in TemporaryUnlock.objects.filter(student=user, unlock_until__gt=now)}
         
         entry_qs = list(WeeklyPreTestQuestion.objects.all().select_related('target_week').prefetch_related('options'))
         entry_questions_map = {}
@@ -222,14 +224,37 @@ class ContentDetailView(APIView):
         if not content:
             return Response({"error": f"{week_number}. hafta içeriği bulunamadı."}, status=status.HTTP_404_NOT_FOUND)
 
+        now = timezone.now()
+        temp_unlock = None
+        if user.is_authenticated and not (getattr(user, 'is_teacher', False) or user.is_staff):
+            from .models import TemporaryUnlock
+            temp_unlock = TemporaryUnlock.objects.filter(
+                student=user, 
+                week=content, 
+                unlock_until__gt=now
+            ).first()
+
+        context = {'request': request}
+        if temp_unlock:
+            context['temporary_unlocks_map'] = {content.id: temp_unlock}
+
         # Serializer'ı hazırla
-        serializer = WeeklyContentSerializer(content, context={'request': request})
+        serializer = WeeklyContentSerializer(content, context=context)
         data = serializer.data
 
         # --- YENİ SİSTEM: HAFTALIK GİRİŞ TESTİ VE ANKET ZORUNLULUĞU ---
         is_teacher = getattr(user, 'is_teacher', False) or user.is_staff
         
-        if not is_teacher:
+        if temp_unlock:
+            data['is_locked'] = False
+            data['lock_reason'] = None
+            data['is_temporarily_unlocked'] = True
+            data['temporary_unlock_until'] = temp_unlock.unlock_until.isoformat()
+            data['is_entry_test_required'] = False
+            data['is_survey_required'] = False
+        elif not is_teacher:
+            data['is_temporarily_unlocked'] = False
+            data['temporary_unlock_until'] = None
             # 1. haftadan sonraki tüm haftalar için kilit kontrolü
             if int(week_number) > 1:
                 

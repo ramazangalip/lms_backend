@@ -96,10 +96,17 @@ class StudentQuestionAdmin(admin.ModelAdmin):
     search_fields = ('student__email', 'question_text')
 
     def get_week(self, obj):
-        return f"Hafta {obj.weekly_content.week_number}"
+        if obj.weekly_content:
+            return f"Hafta {obj.weekly_content.week_number}"
+        return "Genel (Haftaya Bağlı Değil)"
+    get_week.short_description = "Hafta"
+    get_week.admin_order_field = "weekly_content__week_number"
     
     def short_question(self, obj):
+        if not obj.question_text:
+            return "-"
         return obj.question_text[:50] + "..." if len(obj.question_text) > 50 else obj.question_text
+    short_question.short_description = "Soru Metni"
 
 # --- SINAV (QUIZ) SİSTEMİ ---
 
