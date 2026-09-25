@@ -94,14 +94,14 @@ DATABASES = {
         'USER': 'ADMIN',
         
     
-        'PASSWORD': 'BÜ.Btmyo.2025?', 
+        'PASSWORD': 'R.s.17080607', 
         
         'OPTIONS': {
            'config_dir': str(BASE_DIR / 'wallet'),
            'wallet_location': str(BASE_DIR / 'wallet'),
            
        
-           'wallet_password': 'Btmyo.2025',
+           'wallet_password': 'R.s.17080607',
         }
     }
 }
