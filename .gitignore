@@ -1,2 +1,6 @@
 env/
 google-creds.json
+.env
+.env.*
+.env.example
+*.log
