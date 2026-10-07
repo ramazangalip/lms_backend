@@ -92,6 +92,13 @@ DATABASES = {
     }
 }
 
+# Oracle DB LOB Performans Optimizasyonu (CLOB verilerinin SSL roundtrip yapmadan tek sorguda string olarak çekilmesini sağlar)
+try:
+    import oracledb
+    oracledb.defaults.fetch_lobs = False
+except Exception:
+    pass
+
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
     {

@@ -37,7 +37,11 @@ def is_pre_requirements_met(user):
         return True
     
     video_watched = IntroVideoCompletion.objects.filter(student=user, is_watched=True).exists()
-    pre_test_done = PreTestResult.objects.filter(student=user, is_completed=True).exists()
+    has_questions = PreTestQuestion.objects.exists()
+    if has_questions:
+        pre_test_done = PreTestResult.objects.filter(student=user, is_completed=True).exists()
+    else:
+        pre_test_done = True
     
     return video_watched and pre_test_done
 
@@ -1248,6 +1252,13 @@ class PreTestStatusView(APIView):
                 "correct": result.correct_answers,
                 "wrong": result.wrong_answers
             }
+        elif not questions.exists():
+            result_data = {
+                "is_completed": True,
+                "score": 100,
+                "correct": 0,
+                "wrong": 0
+            }
             
         return Response({
             "questions": questions_serializer.data,
@@ -1898,6 +1909,13 @@ class StudentBootstrapView(APIView):
                 "score": pre_test.score,
                 "correct": pre_test.correct_answers,
                 "wrong": pre_test.wrong_answers
+            }
+        elif not questions.exists():
+            pre_test_result = {
+                "is_completed": True,
+                "score": 100,
+                "correct": 0,
+                "wrong": 0
             }
 
         return Response({

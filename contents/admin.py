@@ -129,8 +129,17 @@ class QuizOptionInline(admin.TabularInline):
 
 @admin.register(QuizQuestion)
 class QuizQuestionAdmin(admin.ModelAdmin):
-    list_display = ('question_text', 'quiz')
+    list_display = ('id', 'short_question', 'quiz', 'order')
+    list_select_related = ('quiz',)
+    list_filter = ('quiz__material__parent_content', 'quiz')
+    search_fields = ('question_text', 'quiz__title')
     inlines = [QuizOptionInline]
+
+    def short_question(self, obj):
+        if not obj.question_text:
+            return "-"
+        return obj.question_text[:75] + "..." if len(obj.question_text) > 75 else obj.question_text
+    short_question.short_description = "Soru Metni"
 
 @admin.register(Quiz)
 class QuizAdmin(admin.ModelAdmin):
