@@ -24,11 +24,12 @@ logger = logging.getLogger(__name__)
 User = get_user_model()
 
 DEPARTMENT_NAMES = {
-    'cocukgelisimi': 'Çocuk Gelişimi',
-    'diyaliz': 'Diyaliz',
-    'disprotezteknolojisi': 'Diş Protez Teknolojisi',
-    'eczanehizmetleri': 'Eczane Hizmetleri',
-    'fizyoterapi': 'Fizyoterapi',
+    'siyasetbilimi': 'Siyaset Bilimi ve Kamu Yönetimi',
+    'turkdili': 'Türk Dili ve Edebiyatı',
+    'matematik': 'Matematik',
+    'sb': 'Siyaset Bilimi ve Kamu Yönetimi',
+    'td': 'Türk Dili ve Edebiyatı',
+    'mt': 'Matematik',
 }
 
 def format_seconds(seconds):

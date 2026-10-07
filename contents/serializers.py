@@ -602,7 +602,7 @@ class WeeklyContentSerializer(WeeklyContentListSerializer):
 
                 if schedule_dept:
                     from .models import WeeklyContentSchedule
-                    dept_list = ['cocukgelisimi', 'diyaliz', 'disprotezteknolojisi', 'eczanehizmetleri', 'fizyoterapi']
+                    dept_list = ['siyasetbilimi', 'turkdili', 'matematik', 'sb', 'td', 'mt']
                     if schedule_dept == 'all':
                         for d in dept_list:
                             WeeklyContentSchedule.objects.update_or_create(

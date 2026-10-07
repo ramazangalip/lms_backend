@@ -26,7 +26,7 @@ class Command(BaseCommand):
         parser.add_argument(
             '--department',
             type=str,
-            help='Sadece belirli bir bölüm kodu için çalıştır (ör: cocukgelisimi)',
+            help='Sadece belirli bir bölüm kodu için çalıştır (ör: siyasetbilimi, turkdili, matematik)',
         )
         parser.add_argument(
             '--week',
