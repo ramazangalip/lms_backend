@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth.password_validation import validate_password
-from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, TokenRefreshSerializer
 from .models import User, EmailOTP
 
 from datetime import timedelta
@@ -21,7 +21,24 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
         return token
 
     def validate(self, attrs):
-        data = super().validate(attrs)
+        try:
+            data = super().validate(attrs)
+        except Exception:
+            raise serializers.ValidationError({"detail": "Email veya şifreniz yanlıştır."})
+
+        user = getattr(self, 'user', None)
+        if not user:
+            email_val = attrs.get('email') or attrs.get('username')
+            if email_val:
+                user = User.objects.filter(email__iexact=email_val).first()
+
+        if user and getattr(user, 'category', None):
+            cat = str(user.category).strip().lower()
+            if 'd2' in cat:
+                raise serializers.ValidationError({
+                    "detail": "yapayzekadesteklidijitalsinif.com.tr den giriş yapmayı deneyiniz."
+                })
+
         remember_me = self.initial_data.get('remember_me', False)
 
         if remember_me:
@@ -35,6 +52,23 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
             data['access'] = str(access)
             data['remember_me'] = True
 
+        return data
+
+class MyTokenRefreshSerializer(TokenRefreshSerializer):
+    def validate(self, attrs):
+        data = super().validate(attrs)
+        try:
+            refresh = self.token_class(attrs['refresh'])
+            user_id = refresh.get('user_id')
+            if user_id:
+                user = User.objects.filter(id=user_id).first()
+                if user and user.category and 'd2' in str(user.category).strip().lower():
+                    raise serializers.ValidationError({
+                        "detail": "yapayzekadesteklidijitalsinif.com.tr den giriş yapmayı deneyiniz."
+                    })
+        except Exception as e:
+            if isinstance(e, serializers.ValidationError):
+                raise e
         return data
 
 class RegisterSerializer(serializers.ModelSerializer):
