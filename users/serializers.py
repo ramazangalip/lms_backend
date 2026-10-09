@@ -21,23 +21,37 @@ class MyTokenObtainPairSerializer(TokenObtainPairSerializer):
         return token
 
     def validate(self, attrs):
-        try:
-            data = super().validate(attrs)
-        except Exception:
+        # E-posta / kullanıcı adını al, kırp ve küçük harfe çevir
+        raw_email = attrs.get('email') or attrs.get('username') or ''
+        email_val = str(raw_email).strip().lower()
+        password = attrs.get('password')
+
+        user = None
+        if email_val:
+            user = User.objects.filter(email__iexact=email_val).first() or User.objects.filter(username__iexact=email_val).first()
+
+        # Kullanıcı yoksa veya şifre yanlışsa
+        if not user or not password or not user.check_password(password):
             raise serializers.ValidationError({"detail": "Email veya şifreniz yanlıştır."})
 
-        user = getattr(self, 'user', None)
-        if not user:
-            email_val = attrs.get('email') or attrs.get('username')
-            if email_val:
-                user = User.objects.filter(email__iexact=email_val).first()
-
+        # Kullanıcı var ve şifre doğru. Kategoriyi kontrol et:
         if user and getattr(user, 'category', None):
             cat = str(user.category).strip().lower()
             if 'd2' in cat:
                 raise serializers.ValidationError({
                     "detail": "yapayzekadesteklidijitalsinif.com.tr den giriş yapmayı deneyiniz."
                 })
+
+        # E-posta eşleşmesini veritabanındaki e-posta adresiyle eşleştir
+        if 'email' in attrs:
+            attrs['email'] = user.email
+        if 'username' in attrs:
+            attrs['username'] = user.username or user.email
+
+        try:
+            data = super().validate(attrs)
+        except Exception:
+            raise serializers.ValidationError({"detail": "Email veya şifreniz yanlıştır."})
 
         remember_me = self.initial_data.get('remember_me', False)
 
