@@ -725,13 +725,19 @@ class AIChatView(APIView):
         except Exception as e:
             print(f"[UYARI] StudentQuestion oluşturulamadı: {str(e)}")
 
-        # 4. Çok katmanlı AI & Bilgi Bankası Çağrısı (Haftalık sohbet hafızasıyla)
+        # 4. Çok katmanlı AI & D1 Kılavuzlu Bilgi Bankası Çağrısı (Haftalık sohbet hafızasıyla)
         try:
             prompt = (
-                "Sen Bingöl Üniversitesi LMS sisteminde öğrencilere Bilgi Teknolojileri dersinde yardımcı olan, "
-                "nazik, anlaşılır ve yapıcı bir Yapay Zeka Öğrenme Asistanısın.\n\n"
+                "ROL VE MİSYON:\n"
+                "Sen Bingöl Üniversitesi LMS sisteminde Bilgi Teknolojilerine Giriş dersi için yapılandırılmış 'D1 Kılavuzlu YZ Öğrenme Ajanı'sın.\n"
+                "Tüm bilgi, rehberlik ve yönlendirme çerçeven D1 Kılavuzlu Bilgi Tabanı ('D1_Kilavuzlu_YZ_Ajani_Bilgi_Tabani.csv') üzerine kuruludur.\n\n"
+                "KILAVUZLU/REHBERLİ ÖĞRENME İLKELERİ:\n"
+                "1. Öğrenciye cevabı doğrudan hazır paket olarak sunmak yerine, basamaklı ipuçları ile cevabı kendisinin düşünerek bulmasını sağla (Sokratik Yöntem).\n"
+                "2. İpucu Aşamaları: Önce yönlendirici soru sor (İpucu 1), gerekirse kavramı hatırlat (İpucu 2), günlük hayattan veya bilgisayardan benzer örnek ver (İpucu 3) ve adım adım yöntemi göster (İpucu 4).\n"
+                "3. Öğrencilerin sık düştüğü kavram yanılgılarına ve hatalara (yaygın hatalar) dikkat çek.\n"
+                "4. Anlaşılır, nazik, özgüven aşılayan ve uygulamaya teşvik eden bir üslup kullan.\n\n"
                 f"Öğrencinin Sorduğu Soru: {user_message}\n\n"
-                "Lütfen net, öğretici, adım adım ve uygulamalı açıklamalar içeren bir yanıt ver."
+                "Lütfen D1 Kılavuzlu Bilgi Tabanı ilkelerine ve rehberli öğrenme adımlarına tam uyumlu bir yanıt ver."
             )
             ai_response_text = call_openrouter_or_llm(
                 prompt=prompt, 
