@@ -883,11 +883,23 @@ class QuizSubmitView(APIView):
         attempt.save()
 
         # 7. Sınav materyalini BU TUR için tamamlandı işaretle
-        CompletedMaterial.objects.get_or_create(
+        completed_mat, created = CompletedMaterial.objects.get_or_create(
             student=request.user, 
             material=quiz.material,
             attempt_round=current_round
         )
+
+        new_points = 0
+        if created and current_round == 1:
+            actual_point = quiz.material.point_value if (quiz.material and getattr(quiz.material, 'point_value', None)) else 1
+            if actual_point in (10, 0, None):
+                new_points = 1
+            else:
+                new_points = actual_point
+            
+            request.user.total_points += new_points
+            request.user.save(update_fields=['total_points'])
+            print(f"DEBUG: Değerlendirme Testi 1. Tur tamamlaması. {new_points} puan kazandı.")
         
         # 8. İlerleme durumunu güncelle (Round yükseltme BURADA YAPILMIYOR)
         total_mats = weekly_content.materials.count()
@@ -912,7 +924,9 @@ class QuizSubmitView(APIView):
             "current_round": current_round,
             "is_completed": progress.is_completed,
             "completion_percentage": progress.completion_percentage,
-            "material_id": str(quiz.material.id)
+            "material_id": str(quiz.material.id),
+            "new_points_earned": new_points,
+            "total_points": request.user.total_points
         }, status=status.HTTP_201_CREATED)
 
 class QuizLastAttemptView(APIView):
