@@ -143,6 +143,7 @@ if cors_origins_raw:
 else:
     CORS_ALLOWED_ORIGINS = [
         "http://localhost:3000",
+        "http://127.0.0.1:3000",
         "https://yapayzekadesteklisinifs.onrender.com", 
         "https://yapayzekadesteklisinifs.vercel.app",
         "https://www.yapayzekadesteklisinif.com.tr",
@@ -153,6 +154,8 @@ if csrf_origins_raw:
     CSRF_TRUSTED_ORIGINS = [o.strip() for o in csrf_origins_raw.split(',') if o.strip()]
 else:
     CSRF_TRUSTED_ORIGINS = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
         "https://yapayzekadesteklisinifs.onrender.com",
         "https://yapayzekadesteklisinifs.vercel.app",
         "https://www.yapayzekadesteklisinif.com.tr",

@@ -480,7 +480,7 @@ class TeacherAnalyticsView(APIView):
                 return Response({"student_info": f"{student.first_name} {student.last_name}", "weekly_analysis": list(time_stats), "progress_analysis": list(progress_stats)})
             except User.DoesNotExist: return Response({"error": "Öğrenci bulunamadı."}, status=404)
         else:
-            students = User.objects.filter(is_staff=False)
+            students = User.objects.filter(is_staff=False, is_teacher=False, category__iexact='d1')
             serializer = StudentAnalyticsSerializer(students, many=True)
             return Response(serializer.data)
 
@@ -527,6 +527,7 @@ class StudentAnalyticsView(APIView):
                 )
             queryset = User.objects.filter(
                 department=department_param, 
+                category__iexact='d1',
                 is_staff=False,
                 is_teacher=False 
             ).order_by('first_name')
@@ -628,6 +629,7 @@ class StudentAnalyticsView(APIView):
                 "last_name": student.last_name,
                 "email": student.email,
                 "department": student.department,
+                "category": getattr(student, 'category', 'd1'),
                 "total_points": getattr(student, 'total_points', 0),
                 "total_time_spent": total_time_str,
                 "overall_progress": round(overall_progress, 1),
@@ -640,12 +642,22 @@ class StudentAnalyticsView(APIView):
                 } if s_pre_test else None
             })
 
-        # Bölüm Bazlı Özet İstatistikler
-        dept_attempts = StudentQuizAttempt.objects.filter(student__department=department_param)
+        # Bölüm Bazlı Özet İstatistikler (Sadece D1 Öğrencileri)
+        dept_attempts = StudentQuizAttempt.objects.filter(
+            student__department=department_param,
+            student__category__iexact='d1',
+            student__is_staff=False,
+            student__is_teacher=False
+        )
         valid_gaps = [a.calibration_gap for a in dept_attempts if a.calibration_gap is not None]
         avg_calibration_gap = round(sum(valid_gaps) / len(valid_gaps), 1) if valid_gaps else 0.0
 
-        dept_times = TimeTracking.objects.filter(student__department=department_param)
+        dept_times = TimeTracking.objects.filter(
+            student__department=department_param,
+            student__category__iexact='d1',
+            student__is_staff=False,
+            student__is_teacher=False
+        )
         t1_total_sec = sum(t.duration_seconds for t in dept_times if t.attempt_round == 1)
         t2_total_sec = sum(t.duration_seconds for t in dept_times if t.attempt_round == 2)
         total_dept_students = queryset.count() or 1
@@ -1102,9 +1114,10 @@ class BulkAcademicReportView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # 2. SEÇİLİ BÖLÜMDEKİ öğrencileri tek seferde getir
+        # 2. SEÇİLİ BÖLÜMDEKİ öğrencileri tek seferde getir (Sadece D1 kategorisi)
         students = User.objects.filter(
             department=department_filter,
+            category__iexact='d1',
             is_staff=False, 
             is_teacher=False
         ).order_by('first_name')
@@ -1214,6 +1227,7 @@ class BulkAcademicReportView(APIView):
                 "full_name": f"{student.first_name} {student.last_name}".upper(),
                 "email": student.email,
                 "department": student.department,
+                "category": getattr(student, 'category', 'd1'),
                 "total_points": getattr(student, 'total_points', 0),
                 "total_time": overall_total_seconds,
                 "total_time_t1": total_time_t1,
@@ -1298,9 +1312,10 @@ class ChatbotAnalyticsView(APIView):
         if not dept or dept == 'all':
             return Response({"error": "Bölüm seçimi zorunludur."}, status=400)
 
-        # 1. Bölümdeki öğrencileri getir
+        # 1. Bölümdeki öğrencileri getir (Sadece D1 kategorisi)
         students = User.objects.filter(
             department=dept, 
+            category__iexact='d1',
             is_staff=False, 
             is_teacher=False
         ).order_by('first_name')
@@ -1320,6 +1335,7 @@ class ChatbotAnalyticsView(APIView):
             
             report_data.append({
                 "student_name": f"{student.first_name} {student.last_name}".upper(),
+                "category": getattr(student, 'category', 'd1'),
                 "total_count": len(s_questions),
                 "questions": [
                     {
@@ -1677,10 +1693,14 @@ class StudentTimeAnalyticsView(APIView):
     def get(self, request):
         dept = request.query_params.get('department')
         
-        # Öğrencilerin TimeTracking log veritabanını filtrele
-        logs = TimeTracking.objects.all()
+        # Öğrencilerin TimeTracking log veritabanını filtrele (Sadece D1 kategorisi)
+        logs = TimeTracking.objects.filter(
+            student__category__iexact='d1',
+            student__is_staff=False,
+            student__is_teacher=False
+        )
         
-        if dept:
+        if dept and dept != 'all':
             logs = logs.filter(student__department=dept)
             
         # --- N+1 QUERY ENGELLİ SÜPER OPTİMİZASYON ALANI ---
@@ -1724,9 +1744,13 @@ class SystemTimeAnalyticsView(APIView):
     def get(self, request):
         dept = request.query_params.get('department')
         
-        # Ana sorgu kalkanı
-        logs = TimeTracking.objects.all()
-        if dept:
+        # Ana sorgu kalkanı (Sadece D1 kategorisi)
+        logs = TimeTracking.objects.filter(
+            student__category__iexact='d1',
+            student__is_staff=False,
+            student__is_teacher=False
+        )
+        if dept and dept != 'all':
             logs = logs.filter(student__department=dept)
 
         # 1. Genel Öğrenci Bazında Toplam Süreleri Hesapla

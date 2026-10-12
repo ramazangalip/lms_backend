@@ -63,9 +63,10 @@ def generate_department_weekly_analytics(department, week_number):
     """
     dept_label = DEPARTMENT_NAMES.get(department, str(department).upper())
     
-    # 1. Bölümdeki öğrencileri çek
+    # 1. Bölümdeki öğrencileri çek (Sadece D1 kategorisi)
     students = User.objects.filter(
         department=department,
+        category__iexact='d1',
         is_staff=False,
         is_teacher=False
     ).order_by('first_name', 'last_name')
