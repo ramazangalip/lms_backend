@@ -1340,6 +1340,7 @@ class ChatbotAnalyticsView(APIView):
                 "questions": [
                     {
                         "text": q.question_text,
+                        "ai_response": q.ai_response_text or "",
                         "week": q.weekly_content.week_number if q.weekly_content else "Genel",
                         "date": q.created_at.strftime('%d.%m.%Y %H:%M')
                     } for q in s_questions

@@ -199,6 +199,7 @@ def generate_department_weekly_analytics(department, week_number):
         for q in s_questions:
             chatbot_questions.append({
                 "text": q.question_text,
+                "ai_response": q.ai_response_text or "",
                 "created_at": q.created_at.strftime('%d.%m.%Y %H:%M') if q.created_at else "-"
             })
 
@@ -707,16 +708,19 @@ def generate_chatbot_analytics_pdf(report_data):
         elements.append(Spacer(1, 4))
 
         cb_rows = [[
-            Paragraph("<b>Ogrencinin Yapay Zekaya Sordugu Soru Metni</b>", bold_body_style),
-            Paragraph("<b>Soru Tarihi ve Saati</b>", bold_body_style)
+            Paragraph("<b>Ogrencinin Sordugu Soru Metni</b>", bold_body_style),
+            Paragraph("<b>Yapay Zeka Yaniti</b>", bold_body_style),
+            Paragraph("<b>Tarih</b>", bold_body_style)
         ]]
         for q in s['chatbot_questions']:
+            ai_ans = fix_tr_pdf_chars(q.get('ai_response', '')) or "-"
             cb_rows.append([
                 Paragraph(fix_tr_pdf_chars(q['text']), body_style),
+                Paragraph(ai_ans, body_style),
                 Paragraph(q['created_at'], body_style)
             ])
 
-        cb_table = Table(cb_rows, colWidths=[380, 150])
+        cb_table = Table(cb_rows, colWidths=[200, 240, 90])
         cb_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#F1F5F9')),
             ('PADDING', (0, 0), (-1, -1), 4),
