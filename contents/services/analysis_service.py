@@ -278,15 +278,23 @@ Analizin sonuna, öğrencinin eksik kaldığı anahtar kavramı düşünerek ke�
     return prompt
 
 STOP_WORDS = {'de', 'da', 'te', 'ta', 'nasıl', 'yapılır', 'nedir', 'ne', 'için', 've', 'ile', 'bir', 'bu', 'şu', 'o', 'var', 'yok', 'mi', 'mı', 'mu', 'mü', 'nelerdir'}
+_INVALID_GEMINI_KEYS = set(['AIzaSyDkpKJzgYHmLRb627KcMzRneEu7xH6o85c'])
+
+def _match_token_in_text(token, text):
+    """Kısa kelimelerde (RAM vb.) kelime sınırı, uzun kelimelerde gövde eşleşmesi yapar."""
+    if len(token) <= 4:
+        return bool(re.search(r'\b' + re.escape(token) + r'\b', text, flags=re.IGNORECASE))
+    stem = token[:4]
+    return token in text or stem in text
 
 def search_knowledge_base_for_chat(user_message, chat_history=None):
     """
-    LLM servisleri erişilemez olduğunda D1 Kılavuzlu YZ Ajanı Bilgi Tabanı (D1_Kilavuzlu_YZ_Ajani_Bilgi_Tabani.csv) 
-    üzerinden öğrencinin sorusuna kılavuzlu/rehberli ve öğretici yanıt arar.
+    LLM servisleri erişilemez olduğunda Bilgi Teknolojileri ders bilgi tabanı 
+    (D1_Kilavuzlu_YZ_Ajani_Bilgi_Tabani.csv) üzerinden öğrencinin sorusuna rehberli ve öğretici yanıt sunar.
     """
     msg_lower = str(user_message).lower()
     
-    # Geçmiş Soru Sorgusu Kontrolü
+    # 1. Geçmiş Soru Sorgusu Kontrolü
     if any(kw in msg_lower for kw in ["az önce", "önceki soru", "ne sordum", "geçmiş soru", "son sorduğum", "ne demiştim"]):
         if chat_history and len(chat_history) > 0:
             last_item = chat_history[-1]
@@ -294,7 +302,43 @@ def search_knowledge_base_for_chat(user_message, chat_history=None):
             if last_q:
                 return f"Az önce bana şu soruyu sormuştunuz: **\"{last_q}\"**"
 
-    # Özel Excel Hücre Birleştirme Kontrolü
+    # 2. Özel Word Belge / Dosya Oluşturma ve Kaydetme Kontrolü
+    if "word" in msg_lower and ("dosya" in msg_lower or "belge" in msg_lower) and any(w in msg_lower for w in ["oluştur", "aç", "nasıl", "yeni", "başla"]):
+        return (
+            "Microsoft Word'de yeni dosya/belge oluşturma ve kaydetme rehberi:\n\n"
+            "💡 **1. Yeni Belge Oluşturma:**\n"
+            "• Word uygulamasını ilk açtığınızda başlangıç ekranında sol üstteki **'Boş Belge'** kartına tıklayın.\n"
+            "• Zaten açık bir Word belgesinde çalışırken yeni bir belge açmak isterseniz en pratik yol klavyeden **Ctrl + N** kısayoluna basmaktır.\n\n"
+            "📖 **2. Belgeyi İlk Kez Kaydetme (Ctrl + S):**\n"
+            "• Yeni oluşturulan belge ilk başta geçici olarak 'Belge1' adıyla açılır. Veri kaybı yaşamamak için hemen **Ctrl + S** kısayoluna basın (veya sol üstteki **Kaydet** simgesine tıklayın).\n"
+            "• Açılan ekranda belgenizi kaydedeceğiniz konumu (örneğin Masaüstü veya Belgeler klasörü) seçin ve dosyanıza anlamlı bir isim verin (örneğin `TBT_Odev1_AdSoyad`).\n\n"
+            "🛠️ **3. Dosya Biçimi ve Uzantısı:**\n"
+            "• Word belgeleri standart olarak **.docx** uzantısıyla kaydedilir.\n"
+            "• Belgenizi hocanıza veya sisteme PDF olarak teslim etmeniz gerekirse, **Dosya > Farklı Kaydet (F12)** yolunu izleyip Kayıt Türü'nü **PDF (*.pdf)** olarak seçebilirsiniz.\n\n"
+            "⚠️ **Yaygın Yanılgı:** Belgeyi oluşturup sayfalarca yazdıktan sonra kaydetmeyi ertelemek. Olası elektrik kesintisi veya kapanmalara karşı çalışırken sık sık **Ctrl + S** tuşuna basma alışkanlığı kazanın!"
+        )
+
+    # 3. Özel Word Metin ve Paragraf Biçimlendirme Kontrolü
+    if "word" in msg_lower and ("metin biçimlendir" in msg_lower or "yazı biçimlendir" in msg_lower or ("metin" in msg_lower and "biçim" in msg_lower) or ("yazı" in msg_lower and "biçim" in msg_lower)):
+        return (
+            "Microsoft Word'de metin biçimlendirme rehberi:\n\n"
+            "💡 **1. Temel İlke (Önce Seç, Sonra Uygula):**\n"
+            "• Biçimlendirmek istediğiniz metni seçmeden yapılan değişiklikler metne yansımaz!\n"
+            "• Hızlı seçim ipuçları: Bir kelimeyi seçmek için üzerine **çift tıklayın**, tüm paragrafı seçmek için paragrafa **üç kez tıklayın**, bir satırı seçmek için sol beyaz kenar boşluğuna **tek tıklayın**.\n\n"
+            "📖 **2. Yazı Tipi Biçimlendirme (Giriş Sekmesi > Yazı Tipi Grubu):**\n"
+            "• **Kalın (Bold):** K simgesi veya klavyeden **Ctrl + K** (İngilizce sürümlerde: **Ctrl + B**)\n"
+            "• **İtalik (Eğik):** İ simgesi veya klavyeden **Ctrl + T** (İngilizce sürümlerde: **Ctrl + I**)\n"
+            "• **Altı Çizili:** A simgesi veya klavyeden **Ctrl + Shift + A** (İngilizce sürümlerde: **Ctrl + U**)\n"
+            "• **Yazı Tipi & Boyutu (Punto):** Akademik ödevlerde standart olarak genellikle Times New Roman veya Calibri, 11-12 punto tercih edilir.\n\n"
+            "🛠️ **3. Paragraf Biçimlendirme (Giriş Sekmesi > Paragraf Grubu):**\n"
+            "• **Hizalama:** Sola yasla, ortala veya akademik ödevlerde her iki kenarı düzleyen **İki Yana Yasla (Ctrl + D)**.\n"
+            "• **Satır Aralığı:** Satır ve Paragraf Aralığı düğmesinden ödev standardı olan **1,5 satır aralığı** seçilir.\n\n"
+            "🎨 **4. Biçim Boyacısı:**\n"
+            "• Hazırladığınız bir metnin biçimini başka metinlere hızlıca uygulamak için metni seçip Giriş sekmesindeki fırça simgesine (**Biçim Boyacısı**) tıklayın.\n\n"
+            "⚠️ **Yaygın Yanılgı:** Metni seçmeden biçimlendirme düğmelerine tıklamak veya satır aralarını fazladan Enter/boşluk tuşlarıyla açmaya çalışmak."
+        )
+
+    # 4. Özel Excel Hücre Birleştirme Kontrolü
     if "excel" in msg_lower and ("hücre" in msg_lower or "birleştir" in msg_lower):
         return (
             "Excel'de hücre birleştirmek için rehberli adımlar:\n\n"
@@ -304,16 +348,16 @@ def search_knowledge_base_for_chat(user_message, chat_history=None):
             "⚠️ Yaygın Hata Uyarısı: Birleştirme yaptığınızda sadece sol üstteki hücrenin verisi korunur, diğer hücrelerdeki veriler silinebilir!"
         )
 
-    # Word Yazı Kalınlaştırma / Biçimlendirme Kontrolü
+    # 5. Özel Word Yazı Kalınlaştırma Kontrolü
     if "word" in msg_lower and ("kalın" in msg_lower or "bold" in msg_lower or "kalınlaş" in msg_lower):
         return (
             "Microsoft Word'de yazıyı kalınlaştırmak için rehberli adımlar:\n\n"
             "1. Kalınlaştırmak istediğiniz metni fare ile seçin.\n"
             "2. Üst menüdeki **Giriş (Home)** sekmesinde yer alan **K** (Bold - Kalın) simgesine tıklayın.\n"
-            "3. Veya klavye kısayolu olarak **Ctrl + B** (Türkçe sürümlerde **Ctrl + K**) tuşlarına basın."
+            "3. Veya klavye kısayolu olarak Türkçe Word'de **Ctrl + K** (İngilizce sürümlerde **Ctrl + B**) tuşlarına basın."
         )
 
-    # Akıllı D1 CSV Bilgi Bankası Taraması
+    # 6. Akıllı CSV Bilgi Bankası Taraması
     kb = get_knowledge_base()
     if not kb:
         return f"Sorunuz ('{user_message}') alındı! Bilgi Teknolojileri ders materyallerini inceleyerek çalışmalarınıza devam edebilirsiniz."
@@ -325,29 +369,58 @@ def search_knowledge_base_for_chat(user_message, chat_history=None):
     if not tokens:
         return f"Sorunuz ('{user_message}') alındı! Bilgi Teknolojileri ders materyallerini inceleyebilirsiniz."
 
+    is_word_query = any(w in msg_lower for w in ['word', 'docx', 'doc'])
+    is_excel_query = any(w in msg_lower for w in ['excel', 'xlsx', 'xls', 'hücre', 'formül', 'eğersay', 'düşeyara', 'topla'])
+    is_ppt_query = any(w in msg_lower for w in ['powerpoint', 'slayt', 'sunu', 'pptx'])
+    is_quiz_query = any(w in msg_lower for w in ['quiz', 'mini quiz', 'soru 1', 'soru 2', 'soru 3', 'şık', 'seçenek'])
+
     matches = []
     for item_id, row in kb.items():
         soru = row.get('soru', '').lower()
         alt_sorular = row.get('alternatif_sorular', '').lower()
         konu = row.get('konu', '').lower()
+        alt_konu = row.get('alt_konu', '').lower()
         anahtarlar = row.get('anahtar_kelimeler', '').lower()
         kazanim = row.get('kazanim', '').lower()
+        soru_tipi = row.get('soru_tipi', '').lower()
+        hafta = str(row.get('hafta', ''))
         
         score = 0
         for token in tokens:
-            stem = token[:4] if len(token) >= 4 else token
-            if token in soru or stem in soru:
-                score += 12
-            if token in alt_sorular or stem in alt_sorular:
+            if _match_token_in_text(token, soru):
+                score += 15
+            if _match_token_in_text(token, alt_sorular):
+                score += 14
+            if _match_token_in_text(token, anahtarlar):
                 score += 10
-            if token in anahtarlar or stem in anahtarlar:
-                score += 8
-            if token in kazanim or stem in kazanim:
+            if _match_token_in_text(token, kazanim):
                 score += 6
-            if token in konu or stem in konu:
-                score += 4
+            if _match_token_in_text(token, konu) or _match_token_in_text(token, alt_konu):
+                score += 8
 
-        # D1 Kılavuzlu İçerik İnşası
+        # Yazılım / Konu bağlam bonusu ve cezası
+        if is_word_query:
+            if hafta in ['5', '6', '7'] or 'word' in konu or 'word' in soru or 'word' in alt_sorular:
+                score += 25
+            else:
+                score -= 15
+        elif is_excel_query:
+            if hafta in ['11', '12', '13'] or 'excel' in konu or 'excel' in soru:
+                score += 25
+            else:
+                score -= 15
+        elif is_ppt_query:
+            if hafta in ['9', '10'] or 'powerpoint' in konu or 'sunu' in konu:
+                score += 25
+            else:
+                score -= 15
+
+        # Normal sohbet sorularında quiz sorularını arkaya at
+        if not is_quiz_query:
+            if soru_tipi == 'quiz' or 'mini quiz' in soru or 'a)' in soru or 'b)' in soru:
+                score -= 35
+
+        # İçerik İnşası
         ipucu1 = row.get('ipucu_1_yonlendirici_soru', '').strip()
         ipucu2 = row.get('ipucu_2_kavram_hatirlatma', '').strip()
         ipucu3 = row.get('ipucu_3_benzer_ornek', '').strip()
@@ -388,7 +461,7 @@ def search_knowledge_base_for_chat(user_message, chat_history=None):
 
 def call_openrouter_or_llm(prompt, ogrenci_tam_ad=None, is_test_analysis=False, fallback_text=None, user_message=None, chat_history=None):
     """
-    OpenRouter API (google/gemma-2-27b-it:free) veya Gemini API / Vertex AI üzerinden 
+    OpenRouter API (google/gemma-2-27b-it:free) veya Gemini API üzerinden 
     LLM analizi veya sohbet yanıtı üretir. Hata durumunda uygun fallback yanıt döner.
     """
     full_prompt = prompt
@@ -405,13 +478,13 @@ def call_openrouter_or_llm(prompt, ogrenci_tam_ad=None, is_test_analysis=False, 
             history_str = "\n".join(history_lines[-10:])
             full_prompt = f"GEÇMİŞ SOHBET DİYALOĞU:\n{history_str}\n\nYENİ SORU / TALEP:\n{prompt}"
 
-    # 1. OpenRouter API Denemesi
-    openrouter_key = getattr(settings, 'OPENROUTER_API_KEY', os.environ.get('OPENROUTER_API_KEY'))
-    if openrouter_key:
+    # 1. OpenRouter API Denemesi (timeout=4)
+    openrouter_key = getattr(settings, 'OPENROUTER_API_KEY', os.environ.get('OPENROUTER_API_KEY', ''))
+    if openrouter_key and openrouter_key.strip():
         try:
             url = "https://openrouter.ai/api/v1/chat/completions"
             headers = {
-                "Authorization": f"Bearer {openrouter_key}",
+                "Authorization": f"Bearer {openrouter_key.strip()}",
                 "Content-Type": "application/json",
                 "HTTP-Referer": "https://bingol.edu.tr",
                 "X-Title": "Bingol LMS AI Engine"
@@ -423,7 +496,7 @@ def call_openrouter_or_llm(prompt, ogrenci_tam_ad=None, is_test_analysis=False, 
                 ],
                 "temperature": 0.7
             }
-            resp = requests.post(url, headers=headers, json=payload, timeout=12)
+            resp = requests.post(url, headers=headers, json=payload, timeout=4)
             if resp.status_code == 200:
                 result_json = resp.json()
                 content = result_json['choices'][0]['message']['content'].strip()
@@ -435,16 +508,16 @@ def call_openrouter_or_llm(prompt, ogrenci_tam_ad=None, is_test_analysis=False, 
         except Exception as e:
             print(f"[UYARI] OpenRouter API çağrısı başarısız, diğer modeller deneniyor: {str(e)}")
 
-    # 2. Google Gemini API / REST Endpoint Denemesi
-    gemini_key = getattr(settings, 'GEMINI_API_KEY', os.environ.get('GEMINI_API_KEY'))
-    if gemini_key:
+    # 2. Google Gemini API / REST Endpoint Denemesi (timeout=4, geçersiz anahtar önbelleği)
+    gemini_key = getattr(settings, 'GEMINI_API_KEY', os.environ.get('GEMINI_API_KEY', ''))
+    if gemini_key and gemini_key.strip() and gemini_key.strip() not in _INVALID_GEMINI_KEYS:
         try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key.strip()}"
             headers = {"Content-Type": "application/json"}
             payload = {
                 "contents": [{"parts": [{"text": full_prompt}]}]
             }
-            resp = requests.post(url, headers=headers, json=payload, timeout=12)
+            resp = requests.post(url, headers=headers, json=payload, timeout=4)
             if resp.status_code == 200:
                 res_data = resp.json()
                 content = res_data['candidates'][0]['content']['parts'][0]['text'].strip()
@@ -453,26 +526,12 @@ def call_openrouter_or_llm(prompt, ogrenci_tam_ad=None, is_test_analysis=False, 
                         if not content.startswith(f"Merhaba {ogrenci_tam_ad}"):
                             content = f"Merhaba {ogrenci_tam_ad}, testi başarıyla tamamladığın için tebrik ederim!\n\n" + content
                     return content
+            elif resp.status_code in (400, 401, 403):
+                _INVALID_GEMINI_KEYS.add(gemini_key.strip())
+                print(f"[UYARI] Gemini API anahtarı geçersiz ({resp.status_code}), sonraki isteklerde atlanacak.")
         except Exception as e:
             print(f"[UYARI] Gemini API çağrısı başarısız: {str(e)}")
-
-    # 3. Vertex AI Denemesi
-    try:
-        from contents.views import init_vertex_ai
-        from vertexai.generative_models import GenerativeModel
-        p_id, loc = init_vertex_ai()
-        model = GenerativeModel(f"projects/{p_id}/locations/{loc}/endpoints/981343814604029952")
-        response = model.generate_content(full_prompt)
-        content = response.text.strip()
-        if content:
-            if is_test_analysis and ogrenci_tam_ad:
-                if not content.startswith(f"Merhaba {ogrenci_tam_ad}"):
-                    content = f"Merhaba {ogrenci_tam_ad}, testi başarıyla tamamladığın için tebrik ederim!\n\n" + content
-            return content
-    except Exception as e:
-        print(f"[UYARI] Vertex AI çağrısı başarısız: {str(e)}")
-
-    # 4. Fallback Yanıtı
+    # 3. Fallback Yanıtı
     if fallback_text:
         return fallback_text
 

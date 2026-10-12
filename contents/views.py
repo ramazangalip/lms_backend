@@ -10,14 +10,7 @@ from rest_framework.permissions import IsAdminUser
 from django.db.models import Sum, F
 from django.conf import settings
 from django.shortcuts import get_object_or_404
-import google as genai
-from google.cloud import aiplatform
 import requests
-from google.auth import default
-from google.auth.transport.requests import Request as AuthRequest
-import vertexai
-from vertexai.generative_models import GenerativeModel
-from google.oauth2 import service_account
 import os
 import json
 from rest_framework import status, permissions
@@ -44,20 +37,6 @@ def is_pre_requirements_met(user):
         pre_test_done = True
     
     return video_watched and pre_test_done
-
-def init_vertex_ai():
-    """Vertex AI bağlantısını merkezi olarak yönetir."""
-    PROJECT_ID = "lmsproject-484210"
-    LOCATION = "us-central1"
-    creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
-    
-    if creds_json:
-        creds_dict = json.loads(creds_json)
-        credentials = service_account.Credentials.from_service_account_info(creds_dict)
-        vertexai.init(project=PROJECT_ID, location=LOCATION, credentials=credentials)
-    else:
-        vertexai.init(project=PROJECT_ID, location=LOCATION)
-    return PROJECT_ID, LOCATION
 
 # --- ANA İÇERİK VIEW ---
 
@@ -679,25 +658,8 @@ class AIChatView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        """Öğrencinin haftaya özel veya genel geçmiş chatbot sohbet mesajlarını getirir."""
-        week_id = request.query_params.get("weekly_content_id") or request.query_params.get("week_id")
-        
-        if week_id and str(week_id).lower() not in ['null', 'undefined', '']:
-            questions = StudentQuestion.objects.filter(
-                student=request.user, 
-                weekly_content_id=week_id
-            ).order_by('created_at')
-        else:
-            questions = StudentQuestion.objects.filter(student=request.user).order_by('created_at')
-
-        # Eski kayıtlarda ai_response_text eksikse veritabanında otomatik tamamla
-        for q in questions:
-            if not q.ai_response_text or not q.ai_response_text.strip():
-                q.ai_response_text = search_knowledge_base_for_chat(q.question_text)
-                q.save(update_fields=['ai_response_text'])
-
-        serializer = StudentQuestionSerializer(questions, many=True)
-        return Response({"history": serializer.data}, status=200)
+        """Öğrenci tarafında geçmiş sohbetler artık yüklenmemektedir. Geçmiş sadece akademisyen panelinde analiz edilir."""
+        return Response({"history": []}, status=200)
 
     def post(self, request):
         user_message = request.data.get("message")
@@ -761,14 +723,19 @@ class AIChatView(APIView):
                 user_message=user_message,
                 chat_history=past_questions
             )
+            if not ai_response_text or not str(ai_response_text).strip():
+                ai_response_text = search_knowledge_base_for_chat(user_message, chat_history=past_questions)
         except Exception as e:
             print(f"[HATA] AIChatView LLM çağrı hatası: {str(e)}")
             ai_response_text = search_knowledge_base_for_chat(user_message, chat_history=past_questions)
 
         # 5. AI Cevabını veritabanına kaydet
         if sq_instance:
-            sq_instance.ai_response_text = ai_response_text
-            sq_instance.save(update_fields=['ai_response_text'])
+            try:
+                sq_instance.ai_response_text = ai_response_text
+                sq_instance.save(update_fields=['ai_response_text'])
+            except Exception as e:
+                print(f"[UYARI] ai_response_text kaydedilemedi: {str(e)}")
 
         return Response({
             "response": ai_response_text,
