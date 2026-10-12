@@ -247,18 +247,22 @@ def build_llm_prompt(ogrenci_tam_ad, bolum, hafta_konu, dogru, yanlis, bos, topl
     basari_orani = round((dogru / toplam) * 100, 1) if toplam > 0 else 0.0
 
     prompt = f"""ROL VE MİSYON:
-Sen üniversite düzeyindeki Bilgi Teknolojilerine Giriş dersi için 'D1 Kılavuzlu YZ Öğrenme Ajanı' ilkelerine dayalı, rehberli ve öğrenci odaklı bir Akademik Ölçme-Değerlendirme Asistanısın.
-Tüm analizlerin ve yönlendirmelerin D1 Kılavuzlu Bilgi Tabanı ('D1_Kilavuzlu_YZ_Ajani_Bilgi_Tabani.csv') müfredatına, kavramsal hiyerarşiye ve pedagojik ilkelere tam uyumlu olmalıdır.
+Sen üniversite düzeyindeki Bilgi Teknolojilerine Giriş dersi için rehberli, yapıcı ve öğrenci odaklı bir Akademik Ölçme ve Değerlendirme Asistanısın.
+Tüm analizlerin ve yönlendirmelerin dersin rehberli öğrenme bilgi tabanı ('D1_Kilavuzlu_YZ_Ajani_Bilgi_Tabani.csv') müfredatına, kavramsal hiyerarşiye ve pedagojik ilkelerine tam uyumlu olmalıdır.
+
+ÖNEMLİ VE KESİNLİKLE UYULMASI GEREKEN KURAL (YASAK TANITIM):
+- Analiz raporunun hiçbir yerinde KESİNLİKLE VE ASLA 'D1', 'D1 Kılavuzlu', 'D1 Ajanı', 'D1 Kılavuzlu YZ Öğrenme Ajanı' gibi grup/kategori/kodlama isimlerini KULLANMA ve KENDİNİ BU ŞEKİLDE TANITMA.
+- Kendinden veya pedagojik yaklaşımdan bahsederken yalnızca 'Öğrenme Asistanı' veya 'Rehberli Öğrenme Yöntemi' ifadelerini kullan.
 
 DEĞERLENDİRİLECEK VERİLER:
 - Öğrenci: {ogrenci_tam_ad}
 - Bölüm: {bolum}
 - Hafta / Konu: {hafta_konu}
 - Test Skoru: {dogru} Doğru, {yanlis} Yanlış, {bos} Boş (Toplam: {toplam} Soru | Başarı Oranı: %{basari_orani})
-- Tespit Edilen Eksik Kavramlar ve Yanılgılar (D1 Bilgi Tabanından):
+- Tespit Edilen Eksik Kavramlar ve Yanılgılar:
 {eksik_kavramlar_blogu}
 
-- Yanlış Yapılan Sorular ve D1 Kılavuzlu Yönlendirmeler:
+- Yanlış Yapılan Sorular ve Rehberli Yönlendirmeler:
 {soru_yonlendirmeleri_blogu}
 
 PEDAGOJİK VE BİÇİMSEL KURALLAR:
@@ -266,10 +270,10 @@ PEDAGOJİK VE BİÇİMSEL KURALLAR:
 Metne MUTLAKA ve İSTİSNASIZ olarak "Merhaba {ogrenci_tam_ad}," hitabıyla başla. Öğrenciyi testi tamamladığı için samimi ve teşvik edici bir dille tebrik et.
 2. GENEL PERFORMANS VE ÜSTBİLİŞSEL EMEK DEĞERLENDİRMESİ:
 Öğrencinin başarı yüzdesini ve harcadığı gayreti değerlendir. Ne kadar bildiğini doğru değerlendirme (kalibrasyon) becerisini destekleyecek motive edici bir özet sun.
-3. YANLIŞ YAPILAN HER SORUYA ÖZEL 2-3 CÜMLELİK KILAVUZLU YÖNLENDİRME:
-Öğrencinin yanlış yaptığı HER BİR soru için (yukarıdaki D1 Bilgi Tabanı yönlendirmelerine dayanarak) tam 2-3 cümlelik özgün, öğretici ve yönlendirici bir açıklama yap. Asla tüm sorulara aynı jenerik kalıbı tekrarlama; soruya, konuya ve yaygın hataya özel açıklamalar ver.
-4. D1 SOKRATİK DÜŞÜNME SORUSU VE KAPANIŞ:
-Analizin sonuna, öğrencinin eksik kaldığı anahtar kavramı düşünerek keşfetmesini sağlayacak tek bir Sokratik yönlendirme sorusu (D1 Kılavuzlu İpucu ruhunda) ekle ve gelecek haftadaki ders için başarı dileğiyle tamamla."""
+3. YANLIŞ YAPILAN HER SORUYA ÖZEL 2-3 CÜMLELİK REHBERLİ YÖNLENDİRME:
+Öğrencinin yanlış yaptığı HER BİR soru için (yukarıdaki yönlendirmelere dayanarak) tam 2-3 cümlelik özgün, öğretici ve yönlendirici bir açıklama yap. Asla tüm sorulara aynı jenerik kalıbı tekrarlama; soruya, konuya ve yaygın hataya özel açıklamalar ver.
+4. SOKRATİK DÜŞÜNME SORUSU VE KAPANIŞ:
+Analizin sonuna, öğrencinin eksik kaldığı anahtar kavramı düşünerek keşfetmesini sağlayacak tek bir Sokratik yönlendirme sorusu ekle ve gelecek haftadaki ders için başarı dileğiyle tamamla."""
 
     return prompt
 
@@ -293,7 +297,7 @@ def search_knowledge_base_for_chat(user_message, chat_history=None):
     # Özel Excel Hücre Birleştirme Kontrolü
     if "excel" in msg_lower and ("hücre" in msg_lower or "birleştir" in msg_lower):
         return (
-            "Excel'de hücre birleştirmek için D1 Kılavuzlu adımlar:\n\n"
+            "Excel'de hücre birleştirmek için rehberli adımlar:\n\n"
             "1. Yönlendirici İpucu: Birleştirmek istediğiniz hücreleri fare ile seçin (örneğin A1 ve B1).\n"
             "2. Kavram Hatırlatma: Üst menüdeki **Giriş (Home)** sekmesine tıklayın.\n"
             "3. Uygulama Adımı: **Hizalama (Alignment)** grubunda yer alan **Birleştir ve Ortala (Merge & Center)** düğmesine basın.\n\n"
@@ -303,7 +307,7 @@ def search_knowledge_base_for_chat(user_message, chat_history=None):
     # Word Yazı Kalınlaştırma / Biçimlendirme Kontrolü
     if "word" in msg_lower and ("kalın" in msg_lower or "bold" in msg_lower or "kalınlaş" in msg_lower):
         return (
-            "Microsoft Word'de yazıyı kalınlaştırmak için D1 Kılavuzlu adımlar:\n\n"
+            "Microsoft Word'de yazıyı kalınlaştırmak için rehberli adımlar:\n\n"
             "1. Kalınlaştırmak istediğiniz metni fare ile seçin.\n"
             "2. Üst menüdeki **Giriş (Home)** sekmesinde yer alan **K** (Bold - Kalın) simgesine tıklayın.\n"
             "3. Veya klavye kısayolu olarak **Ctrl + B** (Türkçe sürümlerde **Ctrl + K**) tuşlarına basın."
@@ -377,7 +381,7 @@ def search_knowledge_base_for_chat(user_message, chat_history=None):
             topic = best_row.get('konu', '')
             alt = best_row.get('alt_konu', '')
             header_str = f"**{topic} ({alt})**" if alt else f"**{topic}**"
-            prefix = f"D1 Kılavuzlu Bilgi Tabanından {header_str} konusuna ilişkin rehberlik:\n\n"
+            prefix = f"{header_str} konusuna ilişkin rehberlik:\n\n"
             return f"{prefix}{best_answer}"
 
     return f"Sorunuz ('{user_message}') alındı! Bilgi Teknolojileri dersi kapsamında sorularınızı sorabilir, ders materyallerini inceleyerek çalışmalarınıza devam edebilirsiniz."
@@ -530,8 +534,8 @@ def generate_test_analysis_report(user, bolum, hafta_konu, dogru_sayisi, yanlis_
         fallback_report = (
             f"Merhaba {ogrenci_tam_ad},\n\n"
             f"Haftalık değerlendirme testini başarıyla tamamladığın için tebrik ederim! Gösterdiğin çaba ve kararlılık öğrenme sürecinin en değerli parçasıdır.\n\n"
-            f"**Genel Değerlendirme:** Testteki sorulara verdiğin yanıtlar konuyu özümseme gayretini gösteriyor. Yanlış cevapladığın soruları aşağıda yer alan D1 Kılavuzlu yönlendirmelerle tekrarlayarak eksiklerini rahatlıkla tamamlayabilirsin.\n\n"
-            f"**Yanlış Yapılan Sorulara Özel D1 Kılavuzlu Yönlendirmeler:**\n{soru_yonlendirmeleri_blogu}\n\n"
+            f"**Genel Değerlendirme:** Testteki sorulara verdiğin yanıtlar konuyu özümseme gayretini gösteriyor. Yanlış cevapladığın soruları aşağıda yer alan rehberli yönlendirmelerle tekrarlayarak eksiklerini rahatlıkla tamamlayabilirsin.\n\n"
+            f"**Yanlış Yapılan Sorulara Özel Rehberli Yönlendirmeler:**\n{soru_yonlendirmeleri_blogu}\n\n"
             f"**Sokratik Düşünme Sorusu:** Sence bu haftaki sorularda karşılaştığın kavramlar günlük hayatındaki dijital araçlarda nasıl karşılık buluyor? Düşüncelerini bir sonraki ünitede pekiştirmeni diler, başarılar dilerim!"
         )
 
