@@ -701,6 +701,9 @@ class AIChatView(APIView):
 
         # 4. Çok katmanlı AI & D1 Kılavuzlu Bilgi Bankası Çağrısı (Haftalık sohbet hafızasıyla)
         try:
+            # Resmi Bilgi Tabanından (D1_Kilavuzlu_YZ_Ajani_Bilgi_Tabani.csv) ilgili içeriği çek
+            kb_context = search_knowledge_base_for_chat(user_message, chat_history=past_questions)
+
             prompt = (
                 "ROL VE MİSYON:\n"
                 "Sen Bingöl Üniversitesi LMS sisteminde Bilgi Teknolojilerine Giriş dersi için yapılandırılmış rehberli ve destekleyici bir Yapay Zeka Öğrenme Asistanısın.\n"
@@ -708,13 +711,19 @@ class AIChatView(APIView):
                 "ÖNEMLİ VE KESİNLİKLE UYULMASI GEREKEN KURAL (YASAK TANITIM):\n"
                 "- Yanıtlarında, hitaplarında veya kendini tanıtırken KESİNLİKLE VE ASLA 'D1', 'D1 Kılavuzlu', 'D1 Ajanı', 'D1 Kılavuzlu YZ Öğrenme Ajanı' gibi grup/kategori/kodlama isimlerini KULLANMA ve KENDİNİ BU ŞEKİLDE TANITMA.\n"
                 "- Öğrenciye hitap ederken kendini sadece samimi bir 'Öğrenme Asistanı' veya ders asistanı olarak konumlandır.\n\n"
+                "DERS BİLGİ TABANINDAN İLGİLİ KAZANIM VE REHBERLİK İÇERİĞİ (ZORUNLU REFERANS):\n"
+                f"{kb_context}\n\n"
+                "KESİN TALİMATLAR:\n"
+                "1. Öğrencinin sorusuna yanıt verirken MUTLAKA yukarıda verilen resmi ders bilgi tabanı içeriğini ve adımlarını esas al.\n"
+                "2. Bilgi tabanındaki kavramlara, ipuçlarına, adım adım çözümlere ve yaygın yanılgı uyarılarına kesinlikle sadık kal.\n"
+                "3. Bilgi tabanı dışına çıkıp kafana göre farklı, kontrolsüz veya uydurma yanıtlar üretme.\n\n"
                 "KILAVUZLU/REHBERLİ ÖĞRENME İLKELERİ:\n"
                 "1. Öğrenciye cevabı doğrudan hazır paket olarak sunmak yerine, basamaklı ipuçları ile cevabı kendisinin düşünerek bulmasını sağla (Sokratik Yöntem).\n"
                 "2. İpucu Aşamaları: Önce yönlendirici soru sor (İpucu 1), gerekirse kavramı hatırlat (İpucu 2), günlük hayattan veya bilgisayardan benzer örnek ver (İpucu 3) ve adım adım yöntemi göster (İpucu 4).\n"
                 "3. Öğrencilerin sık düştüğü kavram yanılgılarına ve hatalara (yaygın hatalar) dikkat çek.\n"
                 "4. Anlaşılır, nazik, özgüven aşılayan ve uygulamaya teşvik eden bir üslup kullan.\n\n"
                 f"Öğrencinin Sorduğu Soru: {user_message}\n\n"
-                "Lütfen rehberli öğrenme ilkelerine ve pedagojik adımlara tam uyumlu bir yanıt ver."
+                "Lütfen yukarıdaki resmi bilgi tabanı verisini kullanarak rehberli öğrenme ilkelerine ve pedagojik adımlara tam uyumlu bir yanıt ver."
             )
             ai_response_text = call_openrouter_or_llm(
                 prompt=prompt, 
@@ -724,7 +733,7 @@ class AIChatView(APIView):
                 chat_history=past_questions
             )
             if not ai_response_text or not str(ai_response_text).strip():
-                ai_response_text = search_knowledge_base_for_chat(user_message, chat_history=past_questions)
+                ai_response_text = kb_context
         except Exception as e:
             print(f"[HATA] AIChatView LLM çağrı hatası: {str(e)}")
             ai_response_text = search_knowledge_base_for_chat(user_message, chat_history=past_questions)

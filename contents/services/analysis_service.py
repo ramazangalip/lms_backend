@@ -277,15 +277,23 @@ Analizin sonuna, öğrencinin eksik kaldığı anahtar kavramı düşünerek ke�
 
     return prompt
 
-STOP_WORDS = {'de', 'da', 'te', 'ta', 'nasıl', 'yapılır', 'nedir', 'ne', 'için', 've', 'ile', 'bir', 'bu', 'şu', 'o', 'var', 'yok', 'mi', 'mı', 'mu', 'mü', 'nelerdir'}
+STOP_WORDS = {
+    'de', 'da', 'te', 'ta', 'nasıl', 'yapılır', 'nedir', 'ne', 'için', 've', 'ile', 
+    'bir', 'bu', 'şu', 'o', 'var', 'yok', 'mi', 'mı', 'mu', 'mü', 'nelerdir',
+    'işe', 'yarar', 'etmek', 'olur', 'olmalı', 'hakkında', 'ilgili', 'bana', 'anlat'
+}
 _INVALID_GEMINI_KEYS = set(['AIzaSyDkpKJzgYHmLRb627KcMzRneEu7xH6o85c'])
 
 def _match_token_in_text(token, text):
     """Kısa kelimelerde (RAM vb.) kelime sınırı, uzun kelimelerde gövde eşleşmesi yapar."""
     if len(token) <= 4:
         return bool(re.search(r'\b' + re.escape(token) + r'\b', text, flags=re.IGNORECASE))
-    stem = token[:4]
-    return token in text or stem in text
+    if token in text:
+        return True
+    if token.startswith('bilgisayar'):
+        return 'bilgisayar' in text
+    stem = token[:5] if len(token) >= 6 else token
+    return stem in text
 
 def search_knowledge_base_for_chat(user_message, chat_history=None):
     """
@@ -387,16 +395,17 @@ def search_knowledge_base_for_chat(user_message, chat_history=None):
         
         score = 0
         for token in tokens:
+            weight_mult = 2.0 if len(token) <= 4 and token in ['ram', 'rom', 'cpu', 'ssd', 'hdd', 'gpu', 'bios'] else 1.0
             if _match_token_in_text(token, soru):
-                score += 15
+                score += 15 * weight_mult
             if _match_token_in_text(token, alt_sorular):
-                score += 14
+                score += 14 * weight_mult
             if _match_token_in_text(token, anahtarlar):
-                score += 10
+                score += 10 * weight_mult
             if _match_token_in_text(token, kazanim):
-                score += 6
+                score += 6 * weight_mult
             if _match_token_in_text(token, konu) or _match_token_in_text(token, alt_konu):
-                score += 8
+                score += 8 * weight_mult
 
         # Yazılım / Konu bağlam bonusu ve cezası
         if is_word_query:
