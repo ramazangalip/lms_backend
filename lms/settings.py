@@ -76,7 +76,7 @@ WSGI_APPLICATION = 'lms.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 wallet_dir_name = os.environ.get('DB_WALLET_DIR', 'wallet')
-wallet_path = str(BASE_DIR / wallet_dir_name)
+wallet_path = str(BASE_DIR / wallet_dir_name) 
 
 DATABASES = {
     'default': {
