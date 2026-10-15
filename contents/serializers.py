@@ -211,6 +211,13 @@ class WeeklyContentListSerializer(serializers.ModelSerializer):
                 for s in instance.schedules.all()
             }
 
+        # TELAFİ KONTROLÜ: Eğer telafi nedeniyle geçici olarak açılmışsa ön test veya anket zorunlu tutulmaz
+        if ret.get('is_temporarily_unlocked'):
+            ret['is_entry_test_required'] = False
+            ret['is_survey_required'] = False
+            ret['entry_questions'] = []
+            ret['survey_data'] = None
+
         # KONTROL: Eğer haftalık ön test veya anket zorunluysa ve geçici kilit açık değilse materyalleri gizle
         if (ret.get('is_entry_test_required') or ret.get('is_survey_required')) and not ret.get('is_temporarily_unlocked'):
             ret['materials'] = []
@@ -225,6 +232,9 @@ class WeeklyContentListSerializer(serializers.ModelSerializer):
             return False
         
         if getattr(request.user, 'is_teacher', False) or request.user.is_staff:
+            return False
+
+        if self.get_is_temporarily_unlocked(obj):
             return False
 
         surveys_map = self.context.get('surveys_map')
@@ -301,6 +311,9 @@ class WeeklyContentListSerializer(serializers.ModelSerializer):
         if obj.week_number <= 1:
             return False
 
+        if self.get_is_temporarily_unlocked(obj):
+            return False
+
         entry_questions_map = self.context.get('entry_questions_map')
         passed_entry_weeks = self.context.get('passed_entry_weeks')
 
@@ -325,6 +338,16 @@ class WeeklyContentListSerializer(serializers.ModelSerializer):
         if not request or not request.user or not request.user.is_authenticated or getattr(request.user, 'is_teacher', False) or request.user.is_staff:
             return 0.0
         
+        # Telafi kontrolü: Eğer hafta telafi nedeniyle geçici açıksa telafi tamamlama yüzdesini göster
+        if self.get_is_temporarily_unlocked(obj):
+            rem_progress_map = self.context.get('rem_progress_map')
+            if rem_progress_map is not None:
+                rem_prog = rem_progress_map.get(obj.id)
+                return float(rem_prog.completion_percentage) if rem_prog else 0.0
+            from .models import RemediationProgress
+            rem_prog = RemediationProgress.objects.filter(student=request.user, weekly_content=obj).first()
+            return float(rem_prog.completion_percentage) if rem_prog else 0.0
+
         user_progress_map = self.context.get('user_progress_map')
         if user_progress_map is not None:
             prog_obj = user_progress_map.get(obj.id)
@@ -338,6 +361,16 @@ class WeeklyContentListSerializer(serializers.ModelSerializer):
         if not request or not request.user or not request.user.is_authenticated or getattr(request.user, 'is_teacher', False) or request.user.is_staff:
             return False
         
+        # Telafi kontrolü: Eğer hafta telafi nedeniyle geçici açıksa telafi tamamlandı mı bilgisini göster
+        if self.get_is_temporarily_unlocked(obj):
+            rem_progress_map = self.context.get('rem_progress_map')
+            if rem_progress_map is not None:
+                rem_prog = rem_progress_map.get(obj.id)
+                return rem_prog.is_completed if rem_prog else False
+            from .models import RemediationProgress
+            rem_prog = RemediationProgress.objects.filter(student=request.user, weekly_content=obj).first()
+            return rem_prog.is_completed if rem_prog else False
+
         user_progress_map = self.context.get('user_progress_map')
         if user_progress_map is not None:
             prog_obj = user_progress_map.get(obj.id)
@@ -389,6 +422,17 @@ class WeeklyContentListSerializer(serializers.ModelSerializer):
         if due_date and now >= due_date:
             return True
 
+        # Kullanıcı bu haftanın ön değerlendirme testini tamamlamışsa mevcut haftanın kilidi kapanmamalı
+        if request and request.user and request.user.is_authenticated:
+            passed_entry_weeks = self.context.get('passed_entry_weeks')
+            if passed_entry_weeks is not None:
+                if obj.id in passed_entry_weeks:
+                    return False
+            else:
+                from .models import WeeklyPreTestResult
+                if WeeklyPreTestResult.objects.filter(student=request.user, week=obj, is_completed=True).exists():
+                    return False
+
         if obj.week_number > 1:
             weeks_by_num = self.context.get('weeks_by_num')
             if weeks_by_num is not None:
@@ -431,6 +475,17 @@ class WeeklyContentListSerializer(serializers.ModelSerializer):
         if due_date and now >= due_date:
             return f"Bu içeriğin erişim süresi {due_date.strftime('%d.%m.%Y')} tarihinde sona ermiştir."
 
+        # Kullanıcı bu haftanın ön değerlendirme testini tamamlamışsa kilit mesajı yok
+        if request and request.user and request.user.is_authenticated:
+            passed_entry_weeks = self.context.get('passed_entry_weeks')
+            if passed_entry_weeks is not None:
+                if obj.id in passed_entry_weeks:
+                    return None
+            else:
+                from .models import WeeklyPreTestResult
+                if WeeklyPreTestResult.objects.filter(student=request.user, week=obj, is_completed=True).exists():
+                    return None
+
         if obj.week_number > 1:
             weeks_by_num = self.context.get('weeks_by_num')
             if weeks_by_num is not None:
@@ -462,6 +517,8 @@ class WeeklyContentListSerializer(serializers.ModelSerializer):
         return False
     
     def get_entry_questions(self, obj):
+        if self.get_is_temporarily_unlocked(obj):
+            return []
         try:
             entry_questions_map = self.context.get('entry_questions_map')
             if entry_questions_map is not None:

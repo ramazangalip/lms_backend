@@ -232,7 +232,7 @@ class QuizQuestion(models.Model):
 class QuizOption(models.Model):
     """Soruların şıkları (A, B, C, D...)"""
     question = models.ForeignKey(QuizQuestion, on_delete=models.CASCADE, related_name='options')
-    option_text = models.CharField(max_length=255)
+    option_text = models.CharField(max_length=2000)
     is_correct = models.BooleanField(default=False, db_index=True)
 
     class Meta:
@@ -334,7 +334,7 @@ class PreTestQuestion(models.Model):
 class PreTestOption(models.Model):
     """Ön test sorularının seçenekleri"""
     question = models.ForeignKey(PreTestQuestion, related_name='options', on_delete=models.CASCADE)
-    option_text = models.CharField(max_length=255, verbose_name="Seçenek Metni")
+    option_text = models.CharField(max_length=2000, verbose_name="Seçenek Metni")
     is_correct = models.BooleanField(default=False, db_index=True, verbose_name="Doğru Şık mı?")
 
     def __str__(self):
@@ -392,7 +392,7 @@ class WeeklyPreTestQuestion(models.Model):
 class WeeklyPreTestOption(models.Model):
     """Haftalık hazırlık sorularının seçenekleri"""
     question = models.ForeignKey(WeeklyPreTestQuestion, related_name='options', on_delete=models.CASCADE)
-    option_text = models.CharField(max_length=255, verbose_name="Seçenek Metni")
+    option_text = models.CharField(max_length=2000, verbose_name="Seçenek Metni")
     is_correct = models.BooleanField(default=False, db_index=True, verbose_name="Doğru mu?")
 
     def __str__(self):
@@ -435,6 +435,7 @@ class WeeklyPreTestResult(models.Model):
     # Yanlışlar sonucu açılan telafi haftalarını liste olarak tutar (Örn: [1, 3])
     # Bu veri ileride yapay zeka analizleri için çok değerli olacak.
     unlocked_weeks_json = models.JSONField(default=list, blank=True)
+    wrong_answers_detail = models.JSONField(default=list, blank=True, verbose_name="Yanlış Soru Detayları")
 
     class Meta:
         unique_together = ('student', 'week')
@@ -453,7 +454,67 @@ class WeeklyPreTestResult(models.Model):
         if total == 0:
             return 0
         return round((self.correct_count / total) * 100, 2)
-    
+
+# --- TELAFİ (REMEDIATION) TAKİP SİSTEMİ (NORMAL VERİLERİ ASLA SIFIRLAMAYAN AYRI MODELLER) ---
+
+class RemediationTimeTracking(models.Model):
+    """
+    Telafi sürecinde (geçici kilit açıkken) öğrencinin materyallerde geçirdiği süreler
+    burada ayrı tutulur. Normal TimeTracking (T1, T2) hiçbir şekilde etkilenmez veya sıfırlanmaz.
+    """
+    student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='remediation_times')
+    weekly_content = models.ForeignKey(WeeklyContent, on_delete=models.CASCADE)
+    material = models.ForeignKey(Material, on_delete=models.CASCADE, null=True, blank=True)
+    duration_seconds = models.PositiveIntegerField(default=0)
+    date = models.DateField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        verbose_name = "Telafi Zaman Takibi"
+        verbose_name_plural = "Telafi Zaman Takipleri"
+        indexes = [
+            models.Index(fields=['student', 'weekly_content']),
+            models.Index(fields=['student', 'material']),
+        ]
+
+    def __str__(self):
+        return f"{self.student.email} - Telafi H.{self.weekly_content.week_number} - {self.duration_seconds}s"
+
+class RemediationCompletedMaterial(models.Model):
+    """
+    Telafi sürecinde tamamlanan materyaller burada tutulur.
+    Normal CompletedMaterial tablosu etkilenmez.
+    """
+    student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='remediation_completed_materials')
+    material = models.ForeignKey(Material, on_delete=models.CASCADE)
+    completed_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        unique_together = ('student', 'material')
+        verbose_name = "Telafi Tamamlanan Materyal"
+        verbose_name_plural = "Telafi Tamamlanan Materyaller"
+
+    def __str__(self):
+        return f"{self.student.email} - Telafi {self.material.title}"
+
+class RemediationProgress(models.Model):
+    """
+    Telafi sürecinde haftalık tamamlanma yüzdesi burada ayrı tutulur.
+    Normal StudentProgress tablosu ve yüzdeleri sıfırlanmaz/değişmez.
+    """
+    student = models.ForeignKey(User, on_delete=models.CASCADE, related_name='remediation_progresses')
+    weekly_content = models.ForeignKey(WeeklyContent, on_delete=models.CASCADE)
+    completion_percentage = models.FloatField(default=0.0)
+    is_completed = models.BooleanField(default=False, db_index=True)
+    last_accessed = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('student', 'weekly_content')
+        verbose_name = "Telafi Haftalık İlerleme"
+        verbose_name_plural = "Telafi Haftalık İlerlemeleri"
+
+    def __str__(self):
+        return f"{self.student.email} - Telafi H.{self.weekly_content.week_number} - %{self.completion_percentage}"
+
 class Badge(models.Model):
     BADGE_TYPES = (
         ('first_material', 'İlk Materyal Tamamlama'),
@@ -509,7 +570,7 @@ class StudentSurveyResponse(models.Model):
     question = models.ForeignKey(SurveyQuestion, on_delete=models.CASCADE)
     answer_value = models.IntegerField(verbose_name="Likert Değeri (1-5)")
     # Bu alan artık fiziksel olarak DB'de duracak
-    answer_text = models.CharField(max_length=255, verbose_name="Seçilen Şık Metni", null=True, blank=True)
+    answer_text = models.CharField(max_length=2000, verbose_name="Seçilen Şık Metni", null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
@@ -528,7 +589,7 @@ class SurveyQuestionInline(admin.TabularInline):
 
 class SurveyOption(models.Model):
     question = models.ForeignKey(SurveyQuestion, on_delete=models.CASCADE, related_name='options')
-    option_text = models.CharField(max_length=255, verbose_name="Seçenek Metni")
+    option_text = models.CharField(max_length=2000, verbose_name="Seçenek Metni")
     value = models.IntegerField(verbose_name="Puan Değeri") # 1, 2, 3, 4, 5 gibi
 
     def __str__(self):

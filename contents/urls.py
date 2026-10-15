@@ -35,6 +35,7 @@ urlpatterns = [
     path('bulk-academic-report/', BulkAcademicReportView.as_view(), name='bulk-report'),
     path('chatbot-analytics/', ChatbotAnalyticsView.as_view(), name='chatbot-analytics'),
     path('week/<int:week_number>/submit-entry-test/', WeeklyPreTestSubmitView.as_view(), name='weekly-entry-test-submit'),
+    path('teacher/weekly-pretest-analytics/', WeeklyPreTestAnalyticsView.as_view(), name='weekly_pretest_analytics'),
     path('student-badges/', StudentBadgeListView.as_view(), name='student-badges'),
     
     path('surveys/week/<int:week_number>/', SurveyDetailView.as_view(), name='survey-detail'),

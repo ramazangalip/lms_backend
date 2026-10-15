@@ -252,6 +252,24 @@ class TemporaryUnlockAdmin(admin.ModelAdmin):
     is_active.boolean = True
     is_active.short_description = "Erişim Aktif mi?"
 
+@admin.register(RemediationTimeTracking)
+class RemediationTimeTrackingAdmin(admin.ModelAdmin):
+    list_display = ('student', 'weekly_content', 'material', 'duration_seconds', 'date')
+    list_filter = ('weekly_content', 'date')
+    search_fields = ('student__email',)
+
+@admin.register(RemediationCompletedMaterial)
+class RemediationCompletedMaterialAdmin(admin.ModelAdmin):
+    list_display = ('student', 'material', 'completed_at')
+    list_filter = ('completed_at',)
+    search_fields = ('student__email', 'material__title')
+
+@admin.register(RemediationProgress)
+class RemediationProgressAdmin(admin.ModelAdmin):
+    list_display = ('student', 'weekly_content', 'completion_percentage', 'is_completed', 'last_accessed')
+    list_filter = ('weekly_content', 'is_completed')
+    search_fields = ('student__email',)
+
 @admin.register(Badge)
 class BadgeAdmin(admin.ModelAdmin):
     list_display = ('name', 'badge_type', 'icon_name', 'color')
