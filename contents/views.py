@@ -606,6 +606,7 @@ class StudentAnalyticsView(APIView):
         # 3. TOPLU VERİ ÇEKME (Sadece sayfadaki 10 öğrenci için optimize edildi)
         all_time_tracking = list(TimeTracking.objects.filter(student_id__in=student_ids).select_related('weekly_content'))
         all_attempts = list(StudentQuizAttempt.objects.filter(student_id__in=student_ids).select_related('quiz__material__parent_content'))
+        all_completed_materials = list(CompletedMaterial.objects.filter(student_id__in=student_ids).select_related('material'))
         all_answers = list(StudentAnswer.objects.filter(
             attempt__student_id__in=student_ids
         ).select_related('question', 'selected_option', 'attempt'))
@@ -621,6 +622,7 @@ class StudentAnalyticsView(APIView):
             opt.question_id: opt.option_text 
             for opt in QuizOption.objects.filter(is_correct=True)
         }
+        weekly_contents = list(WeeklyContent.objects.all().prefetch_related('materials'))
 
         # 4. VERİLERİ HARİTALAMA
         final_data = []
@@ -629,13 +631,41 @@ class StudentAnalyticsView(APIView):
             s_attempts = [a for a in all_attempts if a.student_id == student.id]
             s_progress = [p for p in all_progress if p.student_id == student.id]
             s_questions = [q for q in all_questions if q.student_id == student.id]
+            s_completed = [cm for cm in all_completed_materials if cm.student_id == student.id]
             s_pre_test = all_pre_tests.get(student.id)
 
             weekly_stats = []
             # 14 haftalık veriyi işleme
             for i in range(1, 15):
-                dur_1 = sum(t.duration_seconds for t in s_times if t.weekly_content and t.weekly_content.week_number == i and t.attempt_round == 1)
-                dur_2 = sum(t.duration_seconds for t in s_times if t.weekly_content and t.weekly_content.week_number == i and t.attempt_round == 2)
+                week_content = next((wc for wc in weekly_contents if wc.week_number == i), None)
+                dur_1 = 0
+                dur_2 = 0
+                t1_progress = 0.0
+                t2_progress = 0.0
+                material_details = []
+
+                if week_content:
+                    total_mats = week_content.materials.count()
+                    done_mats_t1 = sum(1 for cm in s_completed if cm.material.parent_content_id == week_content.id and cm.attempt_round == 1)
+                    t1_progress = round((done_mats_t1 / total_mats) * 100, 1) if total_mats > 0 else 0.0
+
+                    done_mats_t2 = sum(1 for cm in s_completed if cm.material.parent_content_id == week_content.id and cm.attempt_round == 2)
+                    t2_progress = round((done_mats_t2 / total_mats) * 100, 1) if total_mats > 0 else 0.0
+
+                    dur_1 = sum(t.duration_seconds for t in s_times if t.weekly_content and t.weekly_content.week_number == i and t.attempt_round == 1)
+                    dur_2 = sum(t.duration_seconds for t in s_times if t.weekly_content and t.weekly_content.week_number == i and t.attempt_round == 2)
+
+                    for m in week_content.materials.all():
+                        m_dur_t1 = sum(t.duration_seconds for t in s_times if t.material_id == m.id and t.attempt_round == 1)
+                        m_dur_t2 = sum(t.duration_seconds for t in s_times if t.material_id == m.id and t.attempt_round == 2)
+                        material_details.append({
+                            "id": m.id,
+                            "title": m.title,
+                            "content_type": m.content_type,
+                            "duration_seconds": m_dur_t1 + m_dur_t2,
+                            "duration_seconds_t1": m_dur_t1,
+                            "duration_seconds_t2": m_dur_t2
+                        })
                 
                 att_1 = next((a for a in s_attempts if a.quiz.material.parent_content.week_number == i and a.attempt_round == 1), None)
                 att_2 = next((a for a in s_attempts if a.quiz.material.parent_content.week_number == i and a.attempt_round == 2), None)
@@ -659,12 +689,15 @@ class StudentAnalyticsView(APIView):
 
                 weekly_stats.append({
                     "week_number": i,
-                    "progress": float(prog_rec.completion_percentage) if prog_rec else 0,
+                    "has_content": week_content is not None,
+                    "progress": float(t1_progress),
+                    "progress_2": float(t2_progress),
+                    "material_details": material_details,
                     "duration": dur_1 + dur_2,
                     "duration_seconds": dur_1,
                     "duration_2": dur_2,
-                    "score_1": att_1.score if att_1 else 0,
-                    "score_2": att_2.score if att_2 else 0,
+                    "score_1": att_1.score if att_1 else None,
+                    "score_2": att_2.score if att_2 else None,
                     "correct_1": att_1.correct_answers if att_1 else 0,
                     "wrong_1": att_1.wrong_answers if att_1 else 0,
                     "correct_2": att_2.correct_answers if att_2 else 0,
@@ -677,7 +710,8 @@ class StudentAnalyticsView(APIView):
                     "quiz_results": quiz_results 
                 })
 
-            overall_progress = sum(w['progress'] for w in weekly_stats) / 14 if weekly_stats else 0
+            content_weeks = [w for w in weekly_stats if w['has_content']]
+            overall_progress = sum(w['progress'] for w in content_weeks) / len(content_weeks) if content_weeks else 0
             total_sec = sum(t.duration_seconds for t in s_times)
             total_time_str = f"{total_sec // 60} dk" if total_sec < 3600 else f"{total_sec // 3600} sa {(total_sec % 3600) // 60} dk"
 
@@ -1194,6 +1228,7 @@ class BulkAcademicReportView(APIView):
         all_time_tracking = list(TimeTracking.objects.filter(student_id__in=student_ids).select_related('weekly_content', 'material'))
         all_attempts = list(StudentQuizAttempt.objects.filter(student_id__in=student_ids).select_related('quiz__material__parent_content'))
         all_progress = list(StudentProgress.objects.filter(student_id__in=student_ids).select_related('weekly_content'))
+        all_completed_materials = list(CompletedMaterial.objects.filter(student_id__in=student_ids).select_related('material'))
         all_pre_tests = {pt.student_id: pt for pt in PreTestResult.objects.filter(student_id__in=student_ids)}
         
         # Haftalık içerikleri ve materyalleri belleğe al (Sorgu sayısını azaltmak için)
@@ -1207,6 +1242,7 @@ class BulkAcademicReportView(APIView):
             s_times = [t for t in all_time_tracking if t.student_id == student.id]
             s_attempts = [a for a in all_attempts if a.student_id == student.id]
             s_progress = [p for p in all_progress if p.student_id == student.id]
+            s_completed = [cm for cm in all_completed_materials if cm.student_id == student.id]
             s_pre_test = all_pre_tests.get(student.id)
 
             # Ön Test Bilgisi
@@ -1227,11 +1263,25 @@ class BulkAcademicReportView(APIView):
                 # Başlangıç değerleri
                 duration_1 = 0
                 duration_2 = 0
-                correct_1, wrong_1, score_1 = 0, 0, 0
-                correct_2, wrong_2, score_2 = 0, 0, 0
+                correct_1, wrong_1, score_1 = 0, 0, None
+                correct_2, wrong_2, score_2 = 0, 0, None
                 material_details = []
+                t1_progress = 0.0
+                t2_progress = 0.0
+                has_quiz_1 = False
+                has_quiz_2 = False
 
                 if week_content:
+                    total_mats = week_content.materials.count()
+                    
+                    # 1. Turda Gerçek Tamamlanan Materyallerden T1 İlerleme Hesabı
+                    done_mats_t1 = sum(1 for cm in s_completed if cm.material.parent_content_id == week_content.id and cm.attempt_round == 1)
+                    t1_progress = round((done_mats_t1 / total_mats) * 100, 1) if total_mats > 0 else 0.0
+
+                    # 2. Turda Gerçek Tamamlanan Materyallerden T2 İlerleme Hesabı
+                    done_mats_t2 = sum(1 for cm in s_completed if cm.material.parent_content_id == week_content.id and cm.attempt_round == 2)
+                    t2_progress = round((done_mats_t2 / total_mats) * 100, 1) if total_mats > 0 else 0.0
+
                     # Tur 1 & 2 Süreleri
                     duration_1 = sum(t.duration_seconds for t in s_times if t.weekly_content_id == week_content.id and t.attempt_round == 1)
                     duration_2 = sum(t.duration_seconds for t in s_times if t.weekly_content_id == week_content.id and t.attempt_round == 2)
@@ -1239,10 +1289,12 @@ class BulkAcademicReportView(APIView):
                     # Sınav Denemeleri
                     att_1 = next((a for a in s_attempts if a.quiz.material.parent_content_id == week_content.id and a.attempt_round == 1), None)
                     if att_1:
+                        has_quiz_1 = True
                         correct_1, wrong_1, score_1 = att_1.correct_answers, att_1.wrong_answers, att_1.score
                         
                     att_2 = next((a for a in s_attempts if a.quiz.material.parent_content_id == week_content.id and a.attempt_round == 2), None)
                     if att_2:
+                        has_quiz_2 = True
                         correct_2, wrong_2, score_2 = att_2.correct_answers, att_2.wrong_answers, att_2.score
                     
                     # Materyal Bazlı Tur 1 & Tur 2 Süreleri
@@ -1259,28 +1311,31 @@ class BulkAcademicReportView(APIView):
                             "duration_seconds_t2": m_dur_t2
                         })
 
-                # İlerleme Durumu
                 prog_rec = next((p for p in s_progress if p.weekly_content_id == (week_content.id if week_content else None)), None)
-                progress_value = prog_rec.completion_percentage if prog_rec else 0
+                is_round_2_started = True if (duration_2 > 0 or has_quiz_2 or t2_progress > 0 or (prog_rec and prog_rec.current_attempt_round == 2)) else False
 
                 weekly_stats.append({
                     "week": i,
-                    "progress": float(progress_value),
+                    "has_content": week_content is not None,
+                    "progress": float(t1_progress),
+                    "progress_2": float(t2_progress),
                     "material_details": material_details,
                     "duration_seconds": duration_1,
                     "correct": correct_1,
                     "wrong": wrong_1,
                     "score_1": score_1,
+                    "has_quiz_1": has_quiz_1,
                     "predicted_score_1": att_1.predicted_score if att_1 else None,
                     "calibration_gap_1": att_1.calibration_gap if att_1 else None,
                     "duration_seconds_2": duration_2,
                     "correct_2": correct_2,
                     "wrong_2": wrong_2,
                     "score_2": score_2,
+                    "has_quiz_2": has_quiz_2,
                     "predicted_score_2": att_2.predicted_score if att_2 else None,
                     "calibration_gap_2": att_2.calibration_gap if att_2 else None,
                     "has_quiz": True if (att_1 or att_2) else False,
-                    "is_round_2_started": True if (duration_2 > 0 or att_2) else False
+                    "is_round_2_started": is_round_2_started
                 })
 
             total_time_t1 = sum(t.duration_seconds for t in s_times if t.attempt_round == 1)
