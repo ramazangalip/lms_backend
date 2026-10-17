@@ -441,8 +441,18 @@ class WeeklyContentListSerializer(serializers.ModelSerializer):
                 previous_week = WeeklyContent.objects.filter(week_number=obj.week_number - 1).first()
 
             if previous_week:
-                prev_rel_date, _ = self.get_effective_dates(previous_week)
+                prev_rel_date, prev_due_date = self.get_effective_dates(previous_week)
+
+                # Sıralı kilit kuralı:
+                # Eğer önceki haftanın pasif etme tarihi geldiyse veya geçtiyse (prev_due_date <= now),
+                # sıralı kilit UYGULANMAZ (öğrenci önceki haftayı %100 tamamlamamış olsa dahi sonraki haftayı açabilir).
+                # Sıralı kilit SADECE iki hafta da şu anda aktif tarihleri arasındayken uygulanır.
+                is_prev_currently_active = False
                 if prev_rel_date and now >= prev_rel_date:
+                    if not prev_due_date or now < prev_due_date:
+                        is_prev_currently_active = True
+
+                if is_prev_currently_active:
                     user_progress_map = self.context.get('user_progress_map')
                     if user_progress_map is not None:
                         prev_progress = user_progress_map.get(previous_week.id)
@@ -494,14 +504,23 @@ class WeeklyContentListSerializer(serializers.ModelSerializer):
                 previous_week = WeeklyContent.objects.filter(week_number=obj.week_number - 1).first()
 
             if previous_week:
-                user_progress_map = self.context.get('user_progress_map')
-                if user_progress_map is not None:
-                    prev_progress = user_progress_map.get(previous_week.id)
-                else:
-                    prev_progress = StudentProgress.objects.filter(student=request.user, weekly_content=previous_week).first()
+                prev_rel_date, prev_due_date = self.get_effective_dates(previous_week)
 
-                if not prev_progress or not prev_progress.is_completed:
-                    return f"Bu haftayı açmak için lütfen {obj.week_number - 1}. haftayı %100 tamamlayın."
+                is_prev_currently_active = False
+                if prev_rel_date and now >= prev_rel_date:
+                    if not prev_due_date or now < prev_due_date:
+                        is_prev_currently_active = True
+
+                if is_prev_currently_active:
+                    user_progress_map = self.context.get('user_progress_map')
+                    if user_progress_map is not None:
+                        prev_progress = user_progress_map.get(previous_week.id)
+                    else:
+                        from .models import StudentProgress
+                        prev_progress = StudentProgress.objects.filter(student=request.user, weekly_content=previous_week).first()
+
+                    if not prev_progress or not prev_progress.is_completed:
+                        return f"Bu haftayı açmak için lütfen {obj.week_number - 1}. haftayı %100 tamamlayın."
         return None
 
     def get_is_intro_watched(self, obj):
