@@ -223,6 +223,14 @@ class QuizQuestion(models.Model):
         help_text="Öğrenci bu soruyu yanlış yaptığında gösterilecek hazır yapay zeka veya hoca analizi."
     )
 
+    topic = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        verbose_name="Konu Ba?l???",
+        help_text="Bu sorunun ?l?t??? konu ba?l??? / kazan?m."
+    )
+
     class Meta:
         ordering = ['order']
 
@@ -615,4 +623,4 @@ class AcademicEmailLog(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.department} - Hafta {self.week_number} ({self.sent_at.strftime('%d.%m.%Y %H:%M')})"
+        return f"{self.department} - Hafta {self.week_number} ({self.sent_at.strftime('%d.%m.%Y %H:%M')})"

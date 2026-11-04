@@ -20,9 +20,12 @@ class QuizQuestionSerializer(serializers.ModelSerializer):
     # ID'yi writable yapıyoruz
     id = serializers.IntegerField(required=False)
     options = QuizOptionSerializer(many=True)
+    topic = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    explanation = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
     class Meta:
         model = QuizQuestion
-        fields = ['id', 'question_text', 'order', 'options', 'explanation']
+        fields = ['id', 'question_text', 'order', 'options', 'explanation', 'topic']
 
 class QuizSerializer(serializers.ModelSerializer):
     # ID'yi writable yapıyoruz
@@ -791,7 +794,7 @@ class WeeklyContentSerializer(WeeklyContentListSerializer):
                                 q_id = q_val.get('id')
                                 q_obj, _ = QuizQuestion.objects.update_or_create(
                                     quiz=quiz_instance, id=q_id if q_id and str(q_id).isdigit() else None,
-                                    defaults={'question_text': q_val.get('question_text'), 'order': idx, 'explanation': q_val.get('explanation', '')}
+                                    defaults={'question_text': q_val.get('question_text'), 'order': idx, 'explanation': q_val.get('explanation', ''), 'topic': q_val.get('topic', '')}
                                 )
                                 keep_quiz_q_ids.append(q_obj.id)
                                 for o_val in o_list:

@@ -788,6 +788,299 @@ def generate_weekly_pretest_report_pdf(department, dept_name=""):
 
 # ==============================================================================
 # 4. E-POSTA İÇERİK ŞABLONLARI (KULLANICI FORMATINA TAM UYUMLU)
+
+def get_topic_analysis_data(department, week_number):
+    """
+    Belirli bir bolum ve hafta icin test sorularinin konu basliklarini
+    ve D1 ogrencilerinin 1. turdaki yanlis istatistiklerini hesaplar.
+    """
+    from contents.models import (
+        WeeklyContent, Quiz, QuizQuestion, 
+        StudentQuizAttempt, StudentAnswer
+    )
+    from django.contrib.auth import get_user_model
+    User = get_user_model()
+    
+    dept_label = DEPARTMENT_NAMES.get(department, str(department).upper())
+
+    d1_students = User.objects.filter(
+        department=department,
+        category__iexact='d1',
+        is_teacher=False,
+        is_staff=False
+    )
+    total_d1_students = d1_students.count()
+
+    try:
+        content = WeeklyContent.objects.get(week_number=week_number)
+    except WeeklyContent.DoesNotExist:
+        return {
+            "has_content": False,
+            "department": department,
+            "dept_label": dept_label,
+            "week_number": week_number,
+            "total_d1_students": total_d1_students,
+            "quiz_title": "",
+            "topics": [],
+            "total_questions": 0,
+            "total_attempts": 0
+        }
+
+    quiz = Quiz.objects.filter(material__parent_content=content).first()
+    if not quiz:
+        return {
+            "has_content": False,
+            "department": department,
+            "dept_label": dept_label,
+            "week_number": week_number,
+            "total_d1_students": total_d1_students,
+            "quiz_title": "",
+            "topics": [],
+            "total_questions": 0,
+            "total_attempts": 0
+        }
+
+    questions = list(quiz.questions.all().order_by('order', 'id'))
+    total_questions = len(questions)
+
+    attempts = StudentQuizAttempt.objects.filter(
+        student__in=d1_students,
+        quiz=quiz,
+        attempt_round=1
+    ).select_related('student')
+    
+    total_attempts = attempts.count()
+    attempt_ids = [a.id for a in attempts]
+
+    wrong_answers = StudentAnswer.objects.filter(
+        attempt_id__in=attempt_ids,
+        is_correct=False
+    ).select_related('question', 'attempt__student')
+
+    topic_dict = {}
+    for q in questions:
+        raw_topic = (q.topic or "").strip()
+        t_key = raw_topic if raw_topic else "Genel / Belirtilmemis Konu"
+        if t_key not in topic_dict:
+            topic_dict[t_key] = {
+                "topic": t_key,
+                "has_custom_topic": bool(raw_topic),
+                "questions": [],
+                "wrong_student_ids": set(),
+                "total_wrong_count": 0
+            }
+        topic_dict[t_key]["questions"].append(q.id)
+
+    for ans in wrong_answers:
+        q = ans.question
+        raw_topic = (q.topic or "").strip()
+        t_key = raw_topic if raw_topic else "Genel / Belirtilmemis Konu"
+        if t_key in topic_dict:
+            topic_dict[t_key]["wrong_student_ids"].add(ans.attempt.student_id)
+            topic_dict[t_key]["total_wrong_count"] += 1
+
+    topic_list = []
+    base_count = total_attempts if total_attempts > 0 else total_d1_students
+
+    for t_key, t_data in topic_dict.items():
+        wrong_students_count = len(t_data["wrong_student_ids"])
+        rate = round((wrong_students_count / base_count) * 100, 1) if base_count > 0 else 0.0
+        topic_list.append({
+            "topic": t_data["topic"],
+            "has_custom_topic": t_data["has_custom_topic"],
+            "question_count": len(t_data["questions"]),
+            "wrong_student_count": wrong_students_count,
+            "error_percentage": rate,
+            "total_wrong_answers": t_data["total_wrong_count"]
+        })
+
+    topic_list.sort(key=lambda x: (x["error_percentage"], x["wrong_student_count"]), reverse=True)
+
+    return {
+        "has_content": True,
+        "department": department,
+        "dept_label": dept_label,
+        "week_number": week_number,
+        "week_title": content.title or f"{week_number}. Hafta",
+        "total_d1_students": total_d1_students,
+        "total_attempts": total_attempts,
+        "quiz_title": quiz.title or "Haftalik Degerlendirme Testi",
+        "topics": topic_list,
+        "total_questions": total_questions
+    }
+
+
+def generate_topic_analysis_report_pdf(department, week_number, dept_name=""):
+    """
+    4. Sinav Konu Basliklari Yanlis / Eksiklik Analiz Raporu (Portrait A4).
+    O haftaki sorularin bagli oldugu konu basliklarini listeler,
+    kac ogrencinin yanlis yaptigini hem sayi hem de yuzdelik oran olarak sunar.
+    """
+    data = get_topic_analysis_data(department, week_number)
+    dept_label = dept_name or data["dept_label"]
+    
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=25,
+        rightMargin=25,
+        topMargin=25,
+        bottomMargin=25
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        'DocTitle', fontName=font_bold, fontSize=13, leading=16, alignment=1, textColor=colors.HexColor('#1A1A1A')
+    )
+    subtitle_style = ParagraphStyle(
+        'DocSub', fontName=font_bold, fontSize=9.5, leading=12, alignment=1, textColor=colors.HexColor('#CE1212')
+    )
+    date_style = ParagraphStyle(
+        'DocDate', fontName=font_bold, fontSize=7.5, leading=9, alignment=1, textColor=colors.HexColor('#6B7280')
+    )
+    card_name = ParagraphStyle(
+        'CardName', fontName=font_bold, fontSize=10, leading=12, textColor=colors.white
+    )
+    card_sub = ParagraphStyle(
+        'CardSub', fontName=font_regular, fontSize=7, leading=8.5, textColor=colors.HexColor('#9CA3AF')
+    )
+    card_stat_num = ParagraphStyle(
+        'CardStatNum', fontName=font_bold, fontSize=10, leading=12, alignment=1, textColor=colors.white
+    )
+    card_stat_lbl = ParagraphStyle(
+        'CardStatLbl', fontName=font_bold, fontSize=5.5, leading=7, alignment=1, textColor=colors.HexColor('#D1D5DB')
+    )
+    th_style = ParagraphStyle(
+        'ThStyle', fontName=font_bold, fontSize=7.5, leading=9, alignment=1, textColor=colors.white
+    )
+    cell_topic = ParagraphStyle(
+        'CellTopic', fontName=font_bold, fontSize=7.5, leading=9.5, textColor=colors.HexColor('#0F172A')
+    )
+    cell_sub = ParagraphStyle(
+        'CellSub', fontName=font_regular, fontSize=6.5, leading=8, textColor=colors.HexColor('#64748B')
+    )
+    cell_center = ParagraphStyle(
+        'CellCenter', fontName=font_bold, fontSize=7.5, leading=9.5, alignment=1, textColor=colors.HexColor('#1E293B')
+    )
+    cell_rate = ParagraphStyle(
+        'CellRate', fontName=font_bold, fontSize=8, leading=10, alignment=1, textColor=colors.HexColor('#DC2626')
+    )
+    empty_style = ParagraphStyle(
+        'EmptyStyle', fontName=font_bold, fontSize=9, leading=12, alignment=1, textColor=colors.HexColor('#9CA3AF')
+    )
+
+    elements = []
+
+    # 1. Baslik Alani
+    elements.append(Paragraph(fix_tr_pdf_chars("BINGOL UNIVERSITESI LMS"), title_style))
+    elements.append(Spacer(1, 2))
+    elements.append(Paragraph(fix_tr_pdf_chars("HAFTALIK DEGERLENDIRME SINAVI KONU BASLIGI VE EKSIKLIK ANALIZ RAPORU"), subtitle_style))
+    elements.append(Spacer(1, 2))
+    elements.append(Paragraph(fix_tr_pdf_chars(f"Bolum: {dept_label.upper()}   |   {week_number}. HAFTA ({data.get('week_title', '')})   |   D1 KILAVUZLU YZ OGRENME GRUBU"), subtitle_style))
+    elements.append(Spacer(1, 2))
+    elements.append(Paragraph(fix_tr_pdf_chars(f"Rapor Tarihi: {datetime.now().strftime('%d.%m.%Y %H:%M')}"), date_style))
+    elements.append(Spacer(1, 10))
+
+    # 2. Ozet Bilgi Karti
+    total_topics_count = len(data.get("topics", []))
+    card_cell_left = [
+        Paragraph(fix_tr_pdf_chars(f"<b>{data.get('quiz_title', 'Haftalik Sinav')}</b>"), card_name),
+        Spacer(1, 2),
+        Paragraph(fix_tr_pdf_chars(f"Toplam Soru: {data.get('total_questions', 0)}   |   Toplam Konu Basligi: {total_topics_count}"), card_sub)
+    ]
+
+    card_cell_s1 = [
+        Paragraph(str(data.get("total_d1_students", 0)), card_stat_num),
+        Paragraph(fix_tr_pdf_chars("D1 OGRENCI"), card_stat_lbl)
+    ]
+    card_cell_s2 = [
+        Paragraph(str(data.get("total_attempts", 0)), card_stat_num),
+        Paragraph(fix_tr_pdf_chars("SINAVA GIREN"), card_stat_lbl)
+    ]
+    card_cell_s3 = [
+        Paragraph(str(total_topics_count), card_stat_num),
+        Paragraph(fix_tr_pdf_chars("KONU SAYISI"), card_stat_lbl)
+    ]
+
+    card_table = Table([[card_cell_left, card_cell_s1, card_cell_s2, card_cell_s3]], colWidths=[270, 90, 90, 90])
+    card_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#1E1B4B')),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('PADDING', (0, 0), (-1, -1), 6),
+        ('ROUNDEDCORNERS', [4, 4, 4, 4]),
+    ]))
+    elements.append(card_table)
+    elements.append(Spacer(1, 12))
+
+    # 3. Konu Basliklari Tablosu
+    if not data.get("has_content") or not data.get("topics"):
+        elements.append(Spacer(1, 30))
+        elements.append(Paragraph(fix_tr_pdf_chars("Bu hafta icin tanimli sinav materyali veya soru bulunmamaktadir."), empty_style))
+    else:
+        table_rows = [
+            [
+                Paragraph(fix_tr_pdf_chars("SIRA"), th_style),
+                Paragraph(fix_tr_pdf_chars("KONU BASLIGI / KAZANIM"), th_style),
+                Paragraph(fix_tr_pdf_chars("SORU SAYISI"), th_style),
+                Paragraph(fix_tr_pdf_chars("YANLIS YAPAN OGRENCI"), th_style),
+                Paragraph(fix_tr_pdf_chars("TOPLAM YANLIS CEVAP"), th_style),
+                Paragraph(fix_tr_pdf_chars("EKSIKLIK ORANI (%)"), th_style),
+            ]
+        ]
+
+        for idx, t in enumerate(data["topics"]):
+            rate = t["error_percentage"]
+            if rate >= 50.0:
+                rate_color = "#DC2626"
+                rate_badge = "CIDDI EKSIKLIK"
+            elif rate >= 25.0:
+                rate_color = "#D97706"
+                rate_badge = "ORTA DUZEY"
+            elif rate > 0.0:
+                rate_color = "#2563EB"
+                rate_badge = "DUSUK DUZEY"
+            else:
+                rate_color = "#059669"
+                rate_badge = "TAM BASARI"
+
+            topic_title = t["topic"]
+            topic_flowable = [
+                Paragraph(fix_tr_pdf_chars(f"<b>{topic_title}</b>"), cell_topic),
+                Paragraph(fix_tr_pdf_chars(f"<font color='{rate_color}'>Durum: {rate_badge}</font>"), cell_sub)
+            ]
+
+            rate_flowable = [
+                Paragraph(f"<font color='{rate_color}'><b>%{rate:.1f}</b></font>", cell_rate),
+                Paragraph(fix_tr_pdf_chars(f"{t['wrong_student_count']} / {data.get('total_attempts', 0)} Ogr."), cell_sub)
+            ]
+
+            row = [
+                Paragraph(str(idx + 1), cell_center),
+                topic_flowable,
+                Paragraph(str(t["question_count"]), cell_center),
+                Paragraph(f"<b>{t['wrong_student_count']} Ogrenci</b>", cell_center),
+                Paragraph(str(t["total_wrong_answers"]), cell_center),
+                rate_flowable
+            ]
+            table_rows.append(row)
+
+        topic_table = Table(table_rows, colWidths=[35, 230, 65, 80, 65, 65])
+        topic_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1E1B4B')),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F8FAFC')]),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#E2E8F0')),
+            ('PADDING', (0, 0), (-1, -1), 5),
+        ]))
+        elements.append(topic_table)
+
+    doc.build(elements)
+    pdf_bytes = buffer.getvalue()
+    buffer.close()
+    return pdf_bytes
+
 # ==============================================================================
 
 def build_academic_report_html(academician_name, dept_label):
@@ -913,7 +1206,7 @@ def build_academic_report_html(academician_name, dept_label):
                     <strong>{dept_label}</strong> bölümüne ait Kategori D1 grubu öğrencilerinin akademisyen panelinde yer alan güncel analiz raporları ekte bilgilerinize sunulmuştur.
                 </p>
                 <div class="attachment-box">
-                    <div class="attachment-header">E-Posta Ekinde Yer Alan Raporlar (3 Adet PDF):</div>
+                    <div class="attachment-header">E-Posta Ekinde Yer Alan Raporlar (4 Adet PDF):</div>
                     <div class="attachment-item">
                         📎 <span class="attachment-name">1. Öğrenci Analizleri Raporu:</span> 14 haftalık akademik performans, T1/T2 tamamlama yüzdeleri, çalışma süreleri ve sınav skorları.
                     </div>
@@ -922,6 +1215,9 @@ def build_academic_report_html(academician_name, dept_label):
                     </div>
                     <div class="attachment-item" style="margin-top: 12px;">
                         📎 <span class="attachment-name">3. Ön Değerlendirme Analiz Raporu:</span> Haftalık ön değerlendirme test sonuçları, tetiklenen telafi kilitleri ve telafi süreci ilerlemeleri.
+                    </div>
+                    <div class="attachment-item" style="margin-top: 12px;">
+                        &#128206; <span class="attachment-name">4. Sinav Konu Basligi ve Eksiklik Analiz Raporu:</span> Haftalik sinav sorularinin konu basliklari, yanlis yapan ogrenci sayilari ve eksiklik oranlari.
                     </div>
                 </div>
                 <p class="footer-note">
@@ -942,10 +1238,10 @@ def build_academic_report_text(academician_name, dept_label):
     """Plain-text e-posta fallback metni."""
     text = (
         "BİNGÖL ÜNİVERSİTESİ LMS  SINIF\n"
-        "Akademik Analiz ve İzleme Raporları\n\n"
+        "Akademik Analiz ve İzleme Raporları\n\n📎 4. Sinav Konu Basligi ve Eksiklik Analiz Raporu: Haftalik sinav sorularinin konu basliklari, yanlis yapan ogrenci sayilari ve eksiklik oranlari.\n\n"
         f"Sayın {academician_name},\n\n"
         f"{dept_label} bölümüne ait Kategori D1 grubu öğrencilerinin akademisyen panelinde yer alan güncel analiz raporları ekte bilgilerinize sunulmuştur.\n\n"
-        "E-Posta Ekinde Yer Alan Raporlar (3 Adet PDF):\n\n"
+        "E-Posta Ekinde Yer Alan Raporlar (4 Adet PDF):\n\n"
         "📎 1. Öğrenci Analizleri Raporu: 14 haftalık akademik performans, T1/T2 tamamlama yüzdeleri, çalışma süreleri ve sınav skorları.\n\n"
         "📎 2. Chatbot Analiz Raporu: Öğrencilerin yapay zeka chatbot ile olan soru-yanıt etkileşimleri ve haftalık dökümleri.\n\n"
         "📎 3. Ön Değerlendirme Analiz Raporu: Haftalık ön değerlendirme test sonuçları, tetiklenen telafi kilitleri ve telafi süreci ilerlemeleri.\n\n"
@@ -1045,6 +1341,11 @@ def send_department_academic_report(department, week_number=1, force=False):
             pdf3_name = f"3_On_Degerlendirme_Analiz_Raporu_{safe_dept}.pdf"
             msg.attach(pdf3_name, pdf3_bytes, "application/pdf")
 
+            # 4. Sinav Konu Basligi ve Eksiklik Analiz Raporu (Portrait A4)
+            pdf4_bytes = generate_topic_analysis_report_pdf(department, week_number=week_num, dept_name=dept_label)
+            pdf4_name = f"4_Sinav_Konu_Eksiklik_Raporu_Hafta_{week_num}_{safe_dept}.pdf"
+            msg.attach(pdf4_name, pdf4_bytes, "application/pdf")
+
         except Exception as pdf_err:
             logger.error(f"PDF eklentileri oluşturulurken hata ({department} Hafta {week_num}): {pdf_err}", exc_info=True)
             return False, f"PDF raporları oluşturulamadı: {pdf_err}"
@@ -1063,8 +1364,8 @@ def send_department_academic_report(department, week_number=1, force=False):
                 'error_message': None
             }
         )
-        logger.info(f"Başarıyla e-posta ve 3 PDF raporu gönderildi: {department} Hafta {week_num} -> {recipients}")
-        return True, f"3 adet PDF eklentili akademik rapor {len(recipients)} akademisyene başarıyla iletildi."
+        logger.info(f"Başarıyla e-posta ve 4 PDF raporu gönderildi: {department} Hafta {week_num} -> {recipients}")
+        return True, f"4 adet PDF eklentili akademik rapor {len(recipients)} akademisyene başarıyla iletildi."
 
     except Exception as e:
         err_msg = str(e)
