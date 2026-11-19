@@ -2287,3 +2287,149 @@ class StudentBootstrapView(APIView):
                 "result": pre_test_result
             }
         }, status=status.HTTP_200_OK)
+
+
+# --- VIZE ONCESI VE SONRASI MATERYAL PUAN RAPORU ---
+
+class ExamScoreReportView(APIView):
+    """Akademisyen Paneli: Vize Oncesi ve Sonrasi Materyal Puan Raporu"""
+    permission_classes = [IsAuthenticated]
+
+    DEPT_DISPLAY = {
+        'matematik': 'Matematik',
+        'siyasetbilimi': 'Siyaset Bilimi ve Kamu Yonetimi',
+        'turkdili': 'Turk Dili Ve Edebiyati'
+    }
+
+    def get(self, request):
+        if not getattr(request.user, 'is_teacher', False) and not request.user.is_staff:
+            return Response({"error": "Yetkiniz bulunmamaktadir."}, status=status.HTTP_403_FORBIDDEN)
+
+        department = request.query_params.get('department')
+        if not department:
+            return Response({"error": "Bolum parametresi zorunludur."}, status=status.HTTP_400_BAD_REQUEST)
+
+        from datetime import datetime as dt_class
+        cutoff_date = timezone.make_aware(dt_class(2026, 11, 6, 0, 0, 0))
+
+        students = User.objects.filter(
+            department=department,
+            category__iexact='d1',
+            is_staff=False,
+            is_teacher=False
+        ).order_by('first_name')
+
+        all_completed = CompletedMaterial.objects.filter(
+            student__in=students,
+            attempt_round=1
+        ).select_related('material__parent_content', 'student')
+
+        student_completed_map = {}
+        for cm in all_completed:
+            student_completed_map.setdefault(cm.student_id, []).append(cm)
+
+        total_before_points = 0
+        total_after_points = 0
+        students_data = []
+
+        for student in students:
+            completed_list = student_completed_map.get(student.id, [])
+            before_mats = []
+            after_mats = []
+            before_points = 0
+            after_points = 0
+
+            for cm in completed_list:
+                pv = cm.material.point_value
+                if pv == 10 or pv == 0 or pv is None:
+                    actual_point = 1
+                else:
+                    actual_point = pv
+
+                week_num = cm.material.parent_content.week_number if cm.material.parent_content else 0
+                mat_title = cm.material.title or ''
+                full_title = f"{week_num}. Hafta - {mat_title}"
+                completed_str = cm.completed_at.strftime('%d/%m %H:%M') if cm.completed_at else ''
+
+                mat_data = {
+                    'title': full_title,
+                    'completed_at': completed_str,
+                    'points': actual_point,
+                    'content_type': cm.material.content_type or '',
+                    'week_number': week_num
+                }
+
+                if cm.completed_at < cutoff_date:
+                    before_mats.append(mat_data)
+                    before_points += actual_point
+                else:
+                    after_mats.append(mat_data)
+                    after_points += actual_point
+
+            before_mats.sort(key=lambda x: x.get('week_number', 0))
+            after_mats.sort(key=lambda x: x.get('week_number', 0))
+
+            total_before_points += before_points
+            total_after_points += after_points
+
+            students_data.append({
+                'id': student.id,
+                'first_name': student.first_name,
+                'last_name': student.last_name,
+                'email': student.email,
+                'before_exam_points': before_points,
+                'before_exam_material_count': len(before_mats),
+                'after_exam_points': after_points,
+                'after_exam_material_count': len(after_mats),
+                'total_points': before_points + after_points,
+                'before_exam_materials': before_mats,
+                'after_exam_materials': after_mats,
+            })
+
+        dept_display = self.DEPT_DISPLAY.get(department, department)
+
+        return Response({
+            'department': department,
+            'department_display': dept_display,
+            'cutoff_date': '06.11.2026',
+            'total_students': len(students_data),
+            'total_before_points': total_before_points,
+            'total_after_points': total_after_points,
+            'total_points': total_before_points + total_after_points,
+            'students': students_data,
+        })
+
+
+class StudentExamScoreView(APIView):
+    """Ogrenci Paneli: Kendi vize oncesi/sonrasi puanlarini gorur"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        from datetime import datetime as dt_class
+        cutoff_date = timezone.make_aware(dt_class(2026, 11, 6, 0, 0, 0))
+
+        completed = CompletedMaterial.objects.filter(
+            student=user,
+            attempt_round=1
+        ).select_related('material')
+
+        before_points = 0
+        after_points = 0
+        for cm in completed:
+            pv = cm.material.point_value
+            if pv == 10 or pv == 0 or pv is None:
+                actual_point = 1
+            else:
+                actual_point = pv
+
+            if cm.completed_at < cutoff_date:
+                before_points += actual_point
+            else:
+                after_points += actual_point
+
+        return Response({
+            'before_exam_points': before_points,
+            'after_exam_points': after_points,
+            'total_points': before_points + after_points,
+        })

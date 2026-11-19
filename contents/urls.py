@@ -44,4 +44,6 @@ urlpatterns = [
     path('system-time-analytics/', SystemTimeAnalyticsView.as_view(), name='system-time-analytics'),
     path('academic/surveys/export-excel/<int:week_number>/', ExportSurveyExcelView.as_view(), name='survey-export-excel'),
     path('academic/send-report/', SendAcademicReportManualView.as_view(), name='send-academic-report'),
+    path('exam-score-report/', ExamScoreReportView.as_view(), name='exam-score-report'),
+    path('student-exam-score/', StudentExamScoreView.as_view(), name='student-exam-score'),
 ]
